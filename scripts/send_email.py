@@ -3,9 +3,10 @@
 import argparse
 import json
 import os
+import pathlib
 import smtplib
 import ssl
-import imaplib
+import sys
 import email
 from email.header import decode_header
 from datetime import datetime
@@ -15,6 +16,13 @@ from email.mime.base import MIMEBase
 from email import encoders
 from email.utils import formatdate
 
+# Keep ``python scripts/send_email.py`` compatible with the shared core layout.
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from qqmail_core.config import Credentials
+from qqmail_core.connections import imap_connection
 
 SMTP_HOST = 'smtp.qq.com'
 SMTP_PORT = 587
@@ -70,13 +78,11 @@ def read_file_content(filepath):
 def get_original_email(email_addr, auth_code, mail_id, folder):
     """通过IMAP获取原始邮件，提取回复所需信息"""
     try:
-        mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
-        mail.login(email_addr, auth_code)
-        mail._encoding = 'utf-8'
-        mail.select(quote_folder(folder), readonly=True)
-
-        status, data = mail.fetch(str(mail_id), '(BODY.PEEK[])')
-        mail.logout()
+        # This keeps the M0 sequence-number read behavior, while C2 gives the
+        # reply path the shared verified TLS, timeout, and logout lifecycle.
+        with imap_connection(Credentials(email_addr, auth_code)) as mail:
+            mail.select(quote_folder(folder), readonly=True)
+            status, data = mail.fetch(str(mail_id), '(BODY.PEEK[])')
 
         if status != 'OK' or not data or not data[0]:
             return None

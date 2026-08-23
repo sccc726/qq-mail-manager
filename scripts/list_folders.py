@@ -1,148 +1,57 @@
 #!/usr/bin/env python3
-"""列出QQ邮箱所有文件夹"""
+"""List QQ Mail folders using the M1 shared connection and folder core."""
+from __future__ import annotations
 
 import argparse
-import imaplib
-import json
-import os
-import ssl
-import base64
+import pathlib
+import sys
 
-IMAP_HOST = 'imap.qq.com'
-IMAP_PORT = 993
-ENV_EMAIL = 'QQ_EMAIL'
-ENV_AUTH_CODE = 'QQ_EMAIL_AUTH_CODE'
+# Keep ``python scripts/list_folders.py`` working as well as importlib-based tests.
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from qqmail_core.config import CredentialError, Credentials, load_credentials
+from qqmail_core.connections import imap_connection
+from qqmail_core.folders import FolderError, parse_list_response
+from qqmail_core.results import emit_json, error_result
 
 
 def get_credentials():
-    email_addr = os.environ.get(ENV_EMAIL, '')
-    auth_code = os.environ.get(ENV_AUTH_CODE, '')
-    if not email_addr or not auth_code:
-        return None, None
-    return email_addr, auth_code
-
-
-def decode_imap_utf7(s):
-    """解码 IMAP modified UTF-7 编码的字符串
-    
-    IMAP modified UTF-7 规则：
-    - ASCII 可打印字符直接表示
-    - 非 ASCII 字符用 &...- 包裹，其中 ... 是 modified base64 编码
-    - & 本身用 &- 表示
-    例如: &UXZO1mWHTvZZOQ- 解码为 "已删除邮件"
-    """
-    if not s:
-        return s
-    
-    result = []
-    i = 0
-    while i < len(s):
-        if s[i] == '&' and i + 1 < len(s):
-            # 找到结束的 -
-            j = s.find('-', i + 1)
-            if j == -1:
-                # 没有找到结束符，原样保留
-                result.append(s[i])
-                i += 1
-                continue
-            
-            encoded = s[i + 1:j]
-            if not encoded:
-                # &- 表示 & 本身
-                result.append('&')
-            else:
-                # modified base64 解码
-                # modified UTF-7 使用的是标准 base64，但编码的是 UTF-16BE
-                try:
-                    # 补齐 base64 padding
-                    padding = (4 - len(encoded) % 4) % 4
-                    padded = encoded + '=' * padding
-                    decoded_bytes = base64.b64decode(padded)
-                    # 从 UTF-16BE 解码为 Unicode
-                    text = decoded_bytes.decode('utf-16-be')
-                    result.append(text)
-                except Exception:
-                    # 解码失败，原样返回
-                    result.append(s[i:j + 1])
-            
-            i = j + 1
-        else:
-            result.append(s[i])
-            i += 1
-    
-    return ''.join(result)
-
-
-def parse_folder_name(folder_str):
-    """从 IMAP LIST 响应中解析文件夹名并解码
-    
-    响应格式: (\\HasNoChildren) "/" "Sent Messages"
-    或: (\\HasNoChildren) "/" "&UXZO1mWHTvZZOQ-"
-    """
-    parts = folder_str.split('"')
-    # 取最后一个非空非分隔符的部分作为文件夹名
-    name = ''
-    for p in reversed(parts):
-        p = p.strip()
-        if p and p != '/' and not p.startswith('('):
-            name = p
-            break
-    
-    # 解码 modified UTF-7
-    decoded_name = decode_imap_utf7(name)
-    
-    return name, decoded_name
-
-
-def list_folders(email_addr, auth_code):
-    """列出邮箱所有文件夹"""
+    """Compatibility wrapper retained for callers of the former script helper."""
     try:
-        mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, ssl_context=ssl.create_default_context())
-        mail.login(email_addr, auth_code)
-        mail._encoding = 'utf-8'
+        credentials = load_credentials()
+    except CredentialError:
+        return None, None
+    return credentials.email, credentials.auth_code
 
-        status, folders = mail.list()
-        if status != 'OK':
-            return {'status': 'error', 'message': '无法获取文件夹列表'}
 
-        result = []
-        for f in folders:
-            if isinstance(f, bytes):
-                f = f.decode('utf-8', errors='replace')
-            
-            name, decoded_name = parse_folder_name(f)
-            result.append({
-                'name': name,           # IMAP 原始名（用于脚本参数）
-                'display': decoded_name, # 解码后的可读名（给用户看）
-                'raw': f
-            })
-
-        mail.logout()
-
-        return {
-            'status': 'success',
-            'folders': result,
-            'total': len(result)
-        }
-
-    except imaplib.IMAP4.error as e:
-        return {'status': 'error', 'message': f'IMAP错误: {str(e)}'}
-    except Exception as e:
-        return {'status': 'error', 'message': f'错误: {str(e)}'}
+def list_folders(email_addr: str, auth_code: str):
+    """List folders while preserving the M0 public result fields."""
+    try:
+        with imap_connection(Credentials(email_addr, auth_code)) as mail:
+            status, rows = mail.list()
+            if status != "OK":
+                return error_result("无法获取文件夹列表", code="imap_list_failed")
+            folders = [parse_list_response(row).public_dict() for row in (rows or [])]
+        return {"status": "success", "folders": folders, "total": len(folders)}
+    except FolderError as exc:
+        return error_result(f"文件夹列表解析失败: {exc}", code="folder_parse_failed")
+    except Exception:
+        # Do not reflect arbitrary connection/library errors: they may contain
+        # server diagnostics and must never expose an authorization code.
+        return error_result("IMAP连接或认证失败", code="imap_error")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='列出QQ邮箱所有文件夹')
-    args = parser.parse_args()
-
-    email_addr, auth_code = get_credentials()
-    if not email_addr or not auth_code:
-        print(json.dumps({'status': 'error', 'message': '缺少凭证信息，请先配置QQ邮箱地址和授权码'}, ensure_ascii=False))
-        return
-
-    result = list_folders(email_addr, auth_code)
-    print(json.dumps(result, ensure_ascii=False))
+    parser = argparse.ArgumentParser(description="列出QQ邮箱所有文件夹")
+    parser.parse_args()
+    try:
+        credentials = load_credentials()
+    except CredentialError as exc:
+        return emit_json(error_result(str(exc), code="missing_credentials"))
+    return emit_json(list_folders(credentials.email, credentials.auth_code))
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    raise SystemExit(main())

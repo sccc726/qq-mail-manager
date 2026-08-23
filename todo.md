@@ -57,38 +57,38 @@
 
 公共包建议放在 `scripts/qqmail_core/`，以保持现有 `python scripts/*.py` 调用方式。首轮只抽取确定被后续任务依赖的能力，不在此阶段统一全部 MIME 或 SMTP 业务逻辑。
 
-- [ ] **C1 [P0] 建立统一结果协议、JSON 输出和退出码工具**
+- [x] **C1 [P0] 建立统一结果协议、JSON 输出和退出码工具**
   - 依赖：F1、F2。
   - 统一 `success/preview/partial/error`、批量结果汇总、stdout/stderr 规则和退出码映射。
   - 保留 `preview` 为正式状态，不将其压成 `success`。
   - 验收：同类成功、部分失败、完全失败和参数错误在所有已迁移 CLI 中使用一致结构与退出码。
 
-- [ ] **C2 [P1] 建立共享配置、TLS、超时和连接生命周期**
+- [x] **C2 [P1] 建立共享配置、TLS、超时和连接生命周期**
   - 依赖：F2。
   - 集中服务器常量、凭据读取、默认 timeout、`ssl.create_default_context()`、IMAP logout 与 SMTP close。
   - 后续业务脚本不得直接创建未经公共层封装的 `IMAP4_SSL` 或 `SMTP`。
   - 验收：测试确认 `CERT_REQUIRED`、`check_hostname=True`、显式超时，以及成功/异常路径都执行清理；修复回复读取路径缺少证书验证的问题。
 
-- [ ] **C3 [P1] 建立统一文件夹模型、LIST 解析与 IMAP 参数处理**
+- [x] **C3 [P1] 建立统一文件夹模型、LIST 解析与 IMAP 参数处理**
   - 依赖：F2。
   - 统一 wire name/display name、modified UTF-7、LIST 响应解析、引号与控制字符校验。
   - 优先依据 IMAP SPECIAL-USE `\\Trash` 标志识别垃圾箱，名称匹配只作为可控 fallback。
   - 验收：中英文、空格、引号、反斜杠、`&`、modified Base64 逗号和多个疑似垃圾箱均有测试。
 
-- [ ] **C4 [P0] 建立 MailRef、UIDVALIDITY 与严格 UID 解析**
+- [x] **C4 [P0] 建立 MailRef、UIDVALIDITY 与严格 UID 解析**
   - 依赖：F1、F2。
   - 实现 `MailRef(folder, uidvalidity, uid)`；UID 只允许 `1..4294967295` 的十进制整数。
   - 拒绝 `1:*`、`1:20`、负数、零、空值、控制字符和其他 sequence-set 语法，并在读取凭据或联网前失败。
   - 验收：非法输入时 Fake IMAP/SMTP 调用次数为零；UIDVALIDITY 不匹配时任何 FETCH/STORE/COPY/MOVE 前均停止。
 
-- [ ] **C5 [P1] 建立可复用的规范化预览清单与确认摘要**
+- [x] **C5 [P1] 建立可复用的规范化预览清单与确认摘要**
   - 依赖：C1、C4。
   - 移动清单绑定操作类型、源/目标文件夹、UIDVALIDITY 和 UID 集合。
   - 发送清单可绑定账号、To/CC/BCC、主题、正文哈希、规范化附件路径/大小/内容哈希以及回复 MailRef。
   - 当前个人本机场景可先使用确定性摘要；带秘密、持久化和过期时间的强令牌可后置。
   - 验收：清单任一字段或文件内容变化都会使旧确认摘要失效。
 
-- [ ] **C6 [P2] 用 `list_folders.py` 完成公共核心的首次低风险集成**
+- [x] **C6 [P2] 用 `list_folders.py` 完成公共核心的首次低风险集成**
   - 依赖：C1、C2、C3。
   - 先验证连接生命周期、文件夹解析和统一结果层，不同时改动邮件 UID 语义。
   - 验收：原有稳定输出字段保持兼容，公共层测试通过，脚本不再自行实现凭据、TLS 和文件夹解析。
