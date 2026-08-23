@@ -19,18 +19,14 @@ IMAP_PORT = 993
 # 脚本运行环境可能是UTC，因此日期计算统一使用UTC+8，确保与服务器一致
 UTC8 = timezone(timedelta(hours=8))
 
-SKILL_ID = '7637538402895773731'
-CRED_NAME = 'qq_email'
 ENV_EMAIL = 'QQ_EMAIL'
 ENV_AUTH_CODE = 'QQ_EMAIL_AUTH_CODE'
-LEGACY_ENV_EMAIL = f'COZE_{CRED_NAME}_QQ_EMAIL_{SKILL_ID}'
-LEGACY_ENV_AUTH_CODE = f'COZE_{CRED_NAME}_QQ_EMAIL_AUTH_CODE_{SKILL_ID}'
 
 
 def get_credentials():
     """从环境变量获取凭证"""
-    email_addr = os.environ.get(ENV_EMAIL) or os.environ.get(LEGACY_ENV_EMAIL, '')
-    auth_code = os.environ.get(ENV_AUTH_CODE) or os.environ.get(LEGACY_ENV_AUTH_CODE, '')
+    email_addr = os.environ.get(ENV_EMAIL, '')
+    auth_code = os.environ.get(ENV_AUTH_CODE, '')
     if not email_addr or not auth_code:
         return None, None
     return email_addr, auth_code

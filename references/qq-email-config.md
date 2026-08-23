@@ -98,8 +98,4 @@ OpenClaw 凭证环境变量：
 - `QQ_EMAIL`（邮箱地址）
 - `QQ_EMAIL_AUTH_CODE`（QQ邮箱授权码）
 
-兼容旧 Coze 环境变量：
-- `COZE_qq_email_QQ_EMAIL_7637538402895773731`（邮箱地址）
-- `COZE_qq_email_QQ_EMAIL_AUTH_CODE_7637538402895773731`（授权码）
-
 OpenClaw 可根据 skill metadata 提示配置上述变量；本地手动运行时，请先在 shell 中设置 `QQ_EMAIL` 和 `QQ_EMAIL_AUTH_CODE`。
