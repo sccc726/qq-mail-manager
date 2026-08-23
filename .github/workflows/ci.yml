@@ -1,0 +1,27 @@
+name: Offline CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Syntax check
+        run: python -m compileall -q scripts tests
+      - name: CLI help
+        run: |
+          python scripts/list_folders.py --help > /dev/null
+          python scripts/search_emails.py --help > /dev/null
+          python scripts/get_email.py --help > /dev/null
+          python scripts/download_attachment.py --help > /dev/null
+          python scripts/mark_email.py --help > /dev/null
+          python scripts/move_email.py --help > /dev/null
+          python scripts/send_email.py --help > /dev/null
+      - name: Offline unittest suite
+        run: python -m unittest discover -s tests -v

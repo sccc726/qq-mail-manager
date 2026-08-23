@@ -56,6 +56,10 @@ def quote_folder(name):
 def safe_filename(filename):
     """清洗文件名，防止路径遍历攻击"""
     name = os.path.basename(filename)
+    # 先识别仅由点组成的 basename；替换非法字符后再判断会把
+    # "..." 变成看似有效的 "_."，从而失去这个安全边界。
+    if not name or name.strip('.') == '':
+        return 'attachment'
     name = re.sub(r'[<>:"/\\|?*]', '_', name)
     name = name.replace('..', '_')
     if not name or name.strip('.') == '':
