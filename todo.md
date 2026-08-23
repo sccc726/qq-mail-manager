@@ -103,42 +103,42 @@
 
 本阶段可以分任务开发，但 `U7` 是统一发布门槛。在 U7 前不得把任何中间 ID 语义用于真实邮箱写操作。
 
-- [ ] **U1 [P0] 为 UID 漂移、UIDVALIDITY 和服务器能力补充状态型回归测试**
+- [x] **U1 [P0] 为 UID 漂移、UIDVALIDITY 和服务器能力补充状态型回归测试**
   - 依赖：F2、C4。
   - 覆盖 EXPUNGE 后 sequence 重排、相同 UID 出现在不同文件夹、UIDVALIDITY 变化、MOVE/UIDPLUS capability 组合，以及 COPY/STORE/EXPUNGE 分阶段失败。
   - 验收：测试能在旧实现上暴露问题，并能验证最终邮箱状态而不只是调用次数。
 
-- [ ] **U2 [P0] 将单文件夹只读消费者迁移为 UID FETCH**
+- [x] **U2 [P0] 将单文件夹只读消费者迁移为 UID FETCH**
   - 依赖：C1-C4、C6、U1。
   - 先迁移 `get_email.py` 作为最小只读路径，再迁移 `download_attachment.py` 和 `send_email.py` 的回复原邮件读取。
   - 每次操作先 select 文件夹并核对 UIDVALIDITY；失败返回统一 `error/partial`。
   - 验收：这些脚本不再调用 sequence-number FETCH，sequence 重排后仍读取原邮件。
 
-- [ ] **U3 [P0] 将搜索迁移为 UID，并修复查询构造与错误传播**
+- [x] **U3 [P0] 将搜索迁移为 UID，并修复查询构造与错误传播**
   - 依赖：C1-C4、U1。
   - 使用 UID SEARCH/FETCH；正确处理用户查询、发件人、主题、Unicode、引号和控制字符。
   - select/search/fetch 或全文件夹枚举失败不得伪装为“成功但为空”；逐封失败应返回 `partial`。
   - 验收：搜索结果包含稳定 MailRef，非法查询返回结构化错误，所有失败注入路径状态正确。
 
-- [ ] **U4 [P0] 使用 INTERNALDATE 修复最近时间过滤和跨文件夹排序**
+- [x] **U4 [P0] 使用 INTERNALDATE 修复最近时间过滤和跨文件夹排序**
   - 依赖：U3。
   - 最近时间和跨文件夹排序使用可靠的 INTERNALDATE，不再比较不同文件夹的 UID/sequence，也不依赖可伪造的 Date 头。
   - 合并、去重和排序键至少包含 `folder + uidvalidity + uid`。
   - 验收：跨时区、无 Date、非法 Date、同 UID 不同文件夹和 fetch 失败场景均有确定结果。
 
-- [ ] **U5 [P0] 将标记操作迁移为 UID STORE**
+- [x] **U5 [P0] 将标记操作迁移为 UID STORE**
   - 依赖：C1、C2、C4、U1。
   - 所有 ID 在联网前校验；操作前核对 UIDVALIDITY；逐封准确汇总成功和失败。
   - 验收：不再调用普通 STORE，全部失败返回 `error`，部分失败返回 `partial`。
 
-- [ ] **U6 [P0] 实现安全的 UID 移动/删除与确认绑定**
+- [x] **U6 [P0] 实现安全的 UID 移动/删除与确认绑定**
   - 依赖：C1-C5、U1、U5。
   - 默认仅返回规范化预览；确认时重新核对 UIDVALIDITY 和确认摘要。
   - 优先使用 UID MOVE；fallback 仅在支持 UIDPLUS 时使用 UID COPY → UID STORE `\\Deleted` → UID EXPUNGE 指定 UID。
   - 若服务器既不支持 MOVE 也不能安全 UID EXPUNGE，应在任何变更前返回“不支持安全移动”，不得退回普通全局 EXPUNGE。
   - 验收：无关 `\\Deleted` 邮件不会被清除；COPY/STORE/EXPUNGE 任一步失败时准确报告每封邮件最终状态。
 
-- [ ] **U7 [P0] 原子切换公开 ID 语义并更新 Skill**
+- [x] **U7 [P0] 原子切换公开 ID 语义并更新 Skill**
   - 依赖：U2-U6。
   - 保留现有 `--mail_ids` 和 JSON `mail_id` 名称，但统一规定为 UID 十进制字符串；新增并传递 UIDVALIDITY，回复路径使用对应的回复 UIDVALIDITY。
   - 同步更新 `SKILL.md` 的搜索、详情、附件、标记、移动、删除和回复命令示例。
@@ -147,10 +147,10 @@
 
 ### M2 退出条件
 
-- 所有邮件定位均使用 `folder + UIDVALIDITY + UID`。
-- sequence 重排后仍能定位原邮件；UIDVALIDITY 变化会安全停止。
-- 移动/删除不存在普通全局 EXPUNGE，所有部分失败均可解释。
-- 搜索、读取、附件、标记、移动和回复不再混用两种 ID 语义。
+- [x] 所有邮件定位均使用 `folder + UIDVALIDITY + UID`。
+- [x] sequence 重排后仍能定位原邮件；UIDVALIDITY 变化会安全停止。
+- [x] 移动/删除不存在普通全局 EXPUNGE，所有部分失败均可解释。
+- [x] 搜索、读取、附件、标记、移动和回复不再混用两种 ID 语义。
 
 ## M3：重构发送与回复链路
 

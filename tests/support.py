@@ -76,9 +76,11 @@ class FakeIMAP:
 
     def __init__(self, folders: dict[str, FakeMailbox] | None = None,
                  capabilities: tuple[str, ...] = ("IMAP4REV1", "UIDPLUS"),
-                 failures: dict[str, Any] | None = None, *_args: Any, **_kwargs: Any):
+                 failures: dict[str, Any] | None = None,
+                 capabilities_after_login: tuple[str, ...] | None = None, *_args: Any, **_kwargs: Any):
         self.folders = folders or {"INBOX": FakeMailbox()}
         self.capabilities = capabilities
+        self.capabilities_after_login = capabilities_after_login
         self.failures = failures or {}
         self.log: list[tuple[Any, ...]] = []
         self.selected: str | None = None
@@ -86,8 +88,13 @@ class FakeIMAP:
         self.logged_out = False
         self._encoding = "ascii"
 
-    def _failure(self, phase: str) -> bool:
-        value = self.failures.get(phase)
+    def _failure(self, phase: str, *, folder: str | None = None, uid: str | None = None) -> bool:
+        """Support global and folder/command/UID-specific deterministic failures."""
+        candidates = ((phase, folder, uid), f"{phase}:{folder}:{uid}",
+                      (phase, folder), f"{phase}:{folder}", phase)
+        value = next((self.failures[key] for key in candidates if key in self.failures), None)
+        if isinstance(value, BaseException):
+            raise value
         if isinstance(value, list):
             return bool(value.pop(0)) if value else False
         return bool(value)
@@ -106,6 +113,14 @@ class FakeIMAP:
     def login(self, email_addr: str, auth_code: str):
         self.log.append(("LOGIN", email_addr, auth_code))
         return ("NO", [b"failed"]) if self._failure("login") else ("OK", [b"logged in"])
+
+    def capability(self):
+        self.log.append(("CAPABILITY",))
+        if self._failure("capability"):
+            return "NO", [b"failed"]
+        values = self.capabilities_after_login if self.capabilities_after_login is not None else self.capabilities
+        self.capabilities = values
+        return "OK", [b" ".join(item if isinstance(item, bytes) else str(item).encode() for item in values)]
 
     def logout(self):
         self.log.append(("LOGOUT",))
@@ -180,10 +195,11 @@ class FakeIMAP:
         message = self._resolve(identifier)
         if message is None:
             return "NO", [b"not found"]
+        normalized_flag = flag.strip("()").strip()
         if operation.startswith("+"):
-            message.flags.add(flag)
+            message.flags.add(normalized_flag)
         else:
-            message.flags.discard(flag)
+            message.flags.discard(normalized_flag)
         return "OK", [b"stored"]
 
     def copy(self, identifier: Any, destination: Any):
@@ -208,31 +224,96 @@ class FakeIMAP:
     def uid(self, command: str, *args: Any):
         command = command.upper()
         self.log.append(("UID", command) + args)
-        if self._failure("uid_" + command.lower()):
+        uid = str(args[0].decode() if args and isinstance(args[0], bytes) else args[0]) if args else None
+        if self._failure("uid_" + command.lower(), folder=self.selected, uid=uid) or self._failure(
+                command.lower(), folder=self.selected, uid=uid):
             return "NO", [b"uid command failed"]
         if command == "SEARCH":
-            ids = [message.uid.encode() for message in self._mailbox().messages if self._matches(message, args)]
+            # IMAP4.uid() forwards its arguments verbatim.  Unlike
+            # IMAP4.search(), it does not insert the CHARSET atom itself.
+            # Keep this deliberately strict so callers cannot accidentally
+            # emit the invalid ``UID SEARCH UTF-8 ...`` wire form.
+            first = (args[0].decode() if isinstance(args[0], bytes) else str(args[0])) if args and args[0] is not None else None
+            if first is not None and first.upper() == "CHARSET":
+                if len(args) < 3:
+                    return "BAD", [b"UID SEARCH CHARSET missing name or criteria"]
+                charset = args[1]
+                criteria = args[2:]
+            elif first is None:
+                charset = None
+                criteria = args[1:]
+            else:
+                return "BAD", [b"UID SEARCH requires CHARSET <name> or NIL charset"]
+            rendered = " ".join(value.decode() if isinstance(value, bytes) else str(value) for value in criteria)
+            charset_name = charset.decode() if isinstance(charset, bytes) else str(charset)
+            if not rendered.isascii() and charset_name.upper() != "UTF-8":
+                return "BAD", [b"UTF-8 charset required"]
+            ids = [message.uid.encode() for message in self._mailbox().messages if self._matches(message, criteria)]
             return "OK", [b" ".join(ids)]
         if command == "FETCH":
+            if self._failure("fetch", folder=self.selected, uid=uid):
+                return "NO", [b"fetch failed"]
             message = self._resolve(args[0], by_uid=True)
-            return ("NO", [b"not found"]) if message is None else ("OK", [(b"UID FETCH", message.raw)])
+            if self._failure("uid_fetch_empty", folder=self.selected, uid=uid):
+                return "OK", []
+            if message is None:
+                return "NO", [b"not found"]
+            sequence = self._mailbox().messages.index(message) + 1
+            if len(args) > 1 and str(args[1]) == "(UID)":
+                return "OK", [f"{sequence} (UID {message.uid})".encode()]
+            meta = (f'{sequence} (UID {message.uid} INTERNALDATE "{message.internaldate}" BODY[])').encode()
+            return "OK", [(meta, message.raw)]
         if command == "STORE":
+            if self._failure("store", folder=self.selected, uid=uid):
+                return "NO", [b"store failed"]
             message = self._resolve(args[0], by_uid=True)
+            if self._failure("uid_store_ok_empty", folder=self.selected, uid=uid):
+                return "OK", []
             if message is None:
                 return "NO", [b"not found"]
             operation, flag = args[1], args[2]
+            normalized_flag = str(flag).strip("()").strip()
             if operation.startswith("+"):
-                message.flags.add(flag)
+                message.flags.add(normalized_flag)
             else:
-                message.flags.discard(flag)
+                message.flags.discard(normalized_flag)
             return "OK", [b"stored"]
         if command == "COPY":
+            if self._failure("copy", folder=self.selected, uid=uid):
+                return "NO", [b"copy failed"]
             message = self._resolve(args[0], by_uid=True)
             destination_name = self._clean_folder(args[1])
             if message is None or destination_name not in self.folders:
                 return "NO", [b"not found"]
-            self.folders[destination_name].messages.append(copy.deepcopy(message))
+            copied = copy.deepcopy(message)
+            target = self.folders[destination_name]
+            copied.uid = str(max((int(item.uid) for item in target.messages), default=0) + 1)
+            target.messages.append(copied)
             return "OK", [b"copied"]
+        capability_names = {item.decode().upper() if isinstance(item, bytes) else str(item).upper()
+                            for item in self.capabilities}
+        if command == "MOVE":
+            if self._failure("move", folder=self.selected, uid=uid) or "MOVE" not in capability_names:
+                return "NO", [b"move failed"]
+            message = self._resolve(args[0], by_uid=True)
+            destination_name = self._clean_folder(args[1])
+            if message is None or destination_name not in self.folders:
+                return "NO", [b"not found"]
+            copied = copy.deepcopy(message)
+            target = self.folders[destination_name]
+            copied.uid = str(max((int(item.uid) for item in target.messages), default=0) + 1)
+            target.messages.append(copied)
+            self._mailbox().messages.remove(message)
+            return "OK", [b"moved"]
+        if command == "EXPUNGE":
+            if self._failure("expunge", folder=self.selected, uid=uid) or "UIDPLUS" not in capability_names:
+                return "NO", [b"uid expunge failed"]
+            message = self._resolve(args[0], by_uid=True)
+            if message is None:
+                return "NO", [b"not found"]
+            if "\\Deleted" in message.flags:
+                self._mailbox().messages.remove(message)
+            return "OK", [b"uid expunged"]
         return "BAD", [b"unsupported UID command"]
 
     def snapshot(self):

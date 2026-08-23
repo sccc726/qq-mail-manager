@@ -29,6 +29,9 @@ def move_manifest(*, action: str, source_folder: str, destination_folder: str,
     """Create a canonical move/delete preview manifest and its confirmation digest."""
     if action not in {"move", "delete"}:
         raise ValueError("action must be move or delete")
+    references = list(references)
+    if not references or any(reference.folder != source_folder for reference in references):
+        raise ValueError("移动清单中的邮件必须全部属于源文件夹")
     manifest = {
         "kind": "move",
         "action": action,

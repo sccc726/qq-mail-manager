@@ -119,13 +119,14 @@ class ConfigAndLifecycleTests(OfflineTestCase):
         module = load_script("send_email.py")
         imap = FakeIMAP({"INBOX": FakeMailbox(messages=[FakeMessage("9", sample_message())])})
         with patch("qqmail_core.connections.imaplib.IMAP4_SSL", return_value=imap) as constructor:
-            original = module.get_original_email("me@example.test", "token", "1", "INBOX")
+            original = module.get_original_email("me@example.test", "token", "9", "INBOX", "1")
         self.assertEqual(original["subject"], "Test")
         self.assertTrue(imap.logged_out)
         context = constructor.call_args.kwargs["ssl_context"]
         self.assertTrue(context.check_hostname)
         self.assertNotEqual(context.verify_mode, 0)
         self.assertIn("timeout", constructor.call_args.kwargs)
+        self.assertTrue(any(call[:2] == ("UID", "FETCH") for call in imap.log))
 
 
 class FolderModelTests(OfflineTestCase):

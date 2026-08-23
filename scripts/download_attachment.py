@@ -1,208 +1,129 @@
 #!/usr/bin/env python3
-"""下载QQ邮箱邮件附件"""
-import argparse
-import json
+"""Download attachments from messages addressed by IMAP UID."""
+from __future__ import annotations
+
 import os
+import pathlib
 import re
 import sys
-import imaplib
-import ssl
 from email.header import decode_header
 from email.parser import BytesParser
 
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-IMAP_HOST = 'imap.qq.com'
-IMAP_PORT = 993
-
-ENV_EMAIL = 'QQ_EMAIL'
-ENV_AUTH_CODE = 'QQ_EMAIL_AUTH_CODE'
-
-
-def get_credentials():
-    email_addr = os.environ.get(ENV_EMAIL, '')
-    auth_code = os.environ.get(ENV_AUTH_CODE, '')
-    if not email_addr or not auth_code:
-        return None, None
-    return email_addr, auth_code
+from qqmail_core.config import CredentialError, Credentials, load_credentials
+from qqmail_core.connections import imap_connection
+from qqmail_core.imap_uid import select_uid_fetch
+from qqmail_core.mailref import MailRef, MailRefError, select_verified_mailref
+from qqmail_core.results import (ArgumentParseError, StructuredArgumentParser,
+                                 argument_error_result, batch_result, emit_json,
+                                 error_result)
 
 
-def decode_str(s):
-    if s is None:
+def decode_str(value):
+    if value is None:
         return ""
-    decoded_parts = decode_header(s)
-    result = []
-    for part, charset in decoded_parts:
-        if isinstance(part, bytes):
-            try:
-                result.append(part.decode(charset or 'utf-8', errors='replace'))
-            except (LookupError, UnicodeDecodeError):
-                result.append(part.decode('utf-8', errors='replace'))
-        else:
-            result.append(part)
-    return ''.join(result)
-
-
-def quote_folder(name):
-    """为含空格的文件夹名包裹双引号"""
-    if not name:
-        return name
-    if name.startswith('"') and name.endswith('"'):
-        return name
-    if ' ' in name:
-        return f'"{name}"'
-    return name
+    decoded = []
+    for part, charset in decode_header(value):
+        decoded.append(part.decode(charset or "utf-8", errors="replace") if isinstance(part, bytes) else part)
+    return "".join(decoded)
 
 
 def safe_filename(filename):
-    """清洗文件名，防止路径遍历攻击"""
     name = os.path.basename(filename)
-    # 先识别仅由点组成的 basename；替换非法字符后再判断会把
-    # "..." 变成看似有效的 "_."，从而失去这个安全边界。
-    if not name or name.strip('.') == '':
-        return 'attachment'
-    name = re.sub(r'[<>:"/\\|?*]', '_', name)
-    name = name.replace('..', '_')
-    if not name or name.strip('.') == '':
-        name = 'attachment'
-    return name
+    if not name or name.strip(".") == "":
+        return "attachment"
+    name = re.sub(r'[<>:"/\\|?*]', "_", name).replace("..", "_")
+    return name if name and name.strip(".") else "attachment"
 
 
-def download_attachments_for_mail(mail, mail_id, folder, output_dir='.', target_file=None):
-    """下载单封邮件的附件"""
+def _raw(data, uid):
+    response = select_uid_fetch(data, uid)
+    return response.raw if response else None
+
+
+def download_attachments_for_mail(mail, reference, output_dir=".", target_file=None):
+    """Fetch a UID and return a reference-bearing per-message outcome."""
     try:
-        status, msg_data = mail.fetch(mail_id.encode(), '(BODY.PEEK[])')
-        if status != 'OK':
-            return {'mail_id': mail_id, 'folder': folder, 'status': 'error', 'message': f'无法获取邮件'}
-
-        raw = None
-        for item in msg_data:
-            if isinstance(item, tuple):
-                raw = item[1]
-                break
-        if not raw:
-            return {'mail_id': mail_id, 'folder': folder, 'status': 'error', 'message': f'无法获取邮件内容'}
-
-        msg = BytesParser().parsebytes(raw)
-
-        downloaded = []
-        skipped = []
-
-        for part in msg.walk():
+        select_verified_mailref(mail, reference, readonly=True)
+        status, data = mail.uid("FETCH", reference.uid, "(BODY.PEEK[])")
+        raw = _raw(data, reference.uid) if status == "OK" else None
+        if raw is None:
+            raise MailRefError("无法获取邮件内容")
+        message = BytesParser().parsebytes(raw)
+        downloaded, available = [], []
+        for part in message.walk():
             filename = part.get_filename()
             if not filename:
                 continue
-
-            decoded_filename = decode_str(filename)
-
-            if target_file and decoded_filename != target_file:
-                skipped.append(decoded_filename)
+            filename = decode_str(filename)
+            available.append(filename)
+            if target_file and filename != target_file:
                 continue
-
             payload = part.get_payload(decode=True)
             if payload is None:
-                skipped.append(decoded_filename)
                 continue
-
-            # 安全：清洗文件名
-            safe_name = safe_filename(decoded_filename)
-            save_path = os.path.join(output_dir, safe_name)
-            if os.path.exists(save_path):
-                name, ext = os.path.splitext(safe_name)
-                counter = 1
-                while os.path.exists(os.path.join(output_dir, f'{name}_{counter}{ext}')):
-                    counter += 1
-                save_path = os.path.join(output_dir, f'{name}_{counter}{ext}')
-
-            with open(save_path, 'wb') as f:
-                f.write(payload)
-
-            downloaded.append({
-                'name': safe_name,
-                'size': len(payload),
-                'path': os.path.abspath(save_path)
-            })
-
+            name = safe_filename(filename)
+            destination = pathlib.Path(output_dir) / name
+            suffix = 1
+            while destination.exists():
+                destination = pathlib.Path(output_dir) / f"{pathlib.Path(name).stem}_{suffix}{pathlib.Path(name).suffix}"
+                suffix += 1
+            destination.write_bytes(payload)
+            downloaded.append({"name": destination.name, "size": len(payload), "path": str(destination.resolve())})
         if target_file and not downloaded:
-            return {
-                'mail_id': mail_id,
-                'folder': folder,
-                'status': 'error',
-                'message': f'未找到附件: {target_file}',
-                'available': skipped
-            }
+            raise MailRefError(f"未找到附件: {target_file}")
+        return {**reference.public_dict(), "status": "success", "downloaded": downloaded,
+                "download_count": len(downloaded), "total_size": sum(item["size"] for item in downloaded)}
+    except Exception as exc:
+        return {**reference.public_dict(), "status": "error", "message": str(exc) or "下载附件失败"}
 
-        return {
-            'mail_id': mail_id,
-            'folder': folder,
-            'status': 'success',
-            'downloaded': downloaded,
-            'download_count': len(downloaded),
-            'total_size': sum(d['size'] for d in downloaded)
-        }
 
-    except Exception as e:
-        print(f"[download_attachment] mail_id={mail_id} error: {e}", file=sys.stderr)
-        return {'mail_id': mail_id, 'folder': folder, 'status': 'error', 'message': str(e)}
+def download_attachments(email_addr, auth_code, mail_ids, folder, uidvalidity, output_dir=".", target_file=None):
+    try:
+        references = [MailRef(folder, uidvalidity, uid) for uid in mail_ids]
+    except MailRefError as exc:
+        return error_result(str(exc), code="invalid_mailref")
+    try:
+        pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
+        with imap_connection(Credentials(email_addr, auth_code)) as mail:
+            outcomes = [download_attachments_for_mail(mail, reference, output_dir, target_file)
+                        for reference in references]
+    except Exception:
+        return error_result("IMAP连接或认证失败", code="imap_error")
+    good = [item for item in outcomes if item["status"] == "success"]
+    bad = [item for item in outcomes if item["status"] != "success"]
+    return batch_result(succeeded=good, failed=bad, folder=folder, uidvalidity=uidvalidity,
+                        results=outcomes, total_downloaded=sum(item.get("download_count", 0) for item in good),
+                        total_size=sum(item.get("total_size", 0) for item in good))
 
 
 def main():
-    parser = argparse.ArgumentParser(description='下载QQ邮箱邮件附件')
-    parser.add_argument('--mail_ids', required=True, help='邮件编号，多个逗号分隔')
-    parser.add_argument('--folder', required=True, help='邮箱文件夹（必填）')
-    parser.add_argument('--dir', default='.', help='输出目录（默认当前目录）')
-    parser.add_argument('--file', help='仅下载指定附件名（不传则下载全部）')
-    args = parser.parse_args()
-
-    email_addr, auth_code = get_credentials()
-    if not email_addr or not auth_code:
-        print(json.dumps({'status': 'error', 'message': '缺少凭证信息，请先配置QQ邮箱地址和授权码'}, ensure_ascii=False))
-        return
-
-    mail_ids = [m.strip() for m in args.mail_ids.split(',') if m.strip()]
-
+    parser = StructuredArgumentParser(description="下载QQ邮箱邮件附件（UID）")
+    parser.add_argument("--mail_ids", required=True, help="UID，多个逗号分隔")
+    parser.add_argument("--folder", required=True)
+    parser.add_argument("--uidvalidity", required=True)
+    parser.add_argument("--dir", default=".")
+    parser.add_argument("--file")
     try:
-        mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, ssl_context=ssl.create_default_context())
-        mail.login(email_addr, auth_code)
-        mail._encoding = 'utf-8'
-
-        status, _ = mail.select(quote_folder(args.folder), readonly=True)
-        if status != 'OK':
-            print(json.dumps({'status': 'error', 'message': f'无法访问文件夹: {args.folder}'}, ensure_ascii=False))
-            return
-
-        os.makedirs(args.dir, exist_ok=True)
-
-        results = []
-        for mid in mail_ids:
-            result = download_attachments_for_mail(mail, mid, args.folder, args.dir, args.file)
-            results.append(result)
-
-        mail.logout()
-
-        total_downloaded = sum(r.get('download_count', 0) for r in results)
-        total_size = sum(r.get('total_size', 0) for r in results)
-        errors = [r for r in results if r.get('status') == 'error']
-
-        output = {
-            'status': 'error' if errors else 'success',
-            'folder': args.folder,
-            'total_mails': len(mail_ids),
-            'total_downloaded': total_downloaded,
-            'total_size': total_size,
-            'results': results
-        }
-        if errors:
-            output['message'] = f'{len(errors)}/{len(mail_ids)} 封邮件处理失败'
-        else:
-            output['message'] = f'已处理 {len(mail_ids)} 封邮件，下载 {total_downloaded} 个附件'
-
-        print(json.dumps(output, ensure_ascii=False))
-
-    except imaplib.IMAP4.error as e:
-        print(json.dumps({'status': 'error', 'message': f'IMAP错误: {str(e)}'}, ensure_ascii=False))
-    except Exception as e:
-        print(json.dumps({'status': 'error', 'message': f'错误: {str(e)}'}, ensure_ascii=False))
+        args = parser.parse_args()
+        mail_ids = [item.strip() for item in args.mail_ids.split(",") if item.strip()]
+        if not mail_ids:
+            raise MailRefError("邮件编号不能为空")
+        [MailRef(args.folder, args.uidvalidity, item) for item in mail_ids]
+    except ArgumentParseError as exc:
+        return emit_json(argument_error_result(str(exc)))
+    except MailRefError as exc:
+        return emit_json(error_result(str(exc), code="invalid_mailref"))
+    try:
+        credentials = load_credentials()
+    except CredentialError as exc:
+        return emit_json(error_result(str(exc), code="missing_credentials"))
+    return emit_json(download_attachments(credentials.email, credentials.auth_code, mail_ids,
+                                          args.folder, args.uidvalidity, args.dir, args.file))
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    raise SystemExit(main())

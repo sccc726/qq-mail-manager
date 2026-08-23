@@ -23,6 +23,8 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from qqmail_core.config import Credentials
 from qqmail_core.connections import imap_connection
+from qqmail_core.imap_uid import select_uid_fetch
+from qqmail_core.mailref import MailRef, MailRefError, select_verified_mailref
 
 SMTP_HOST = 'smtp.qq.com'
 SMTP_PORT = 587
@@ -75,23 +77,19 @@ def read_file_content(filepath):
         return None
 
 
-def get_original_email(email_addr, auth_code, mail_id, folder):
+def get_original_email(email_addr, auth_code, mail_id, folder, uidvalidity):
     """通过IMAP获取原始邮件，提取回复所需信息"""
     try:
-        # This keeps the M0 sequence-number read behavior, while C2 gives the
-        # reply path the shared verified TLS, timeout, and logout lifecycle.
+        reference = MailRef(folder, uidvalidity, mail_id)
         with imap_connection(Credentials(email_addr, auth_code)) as mail:
-            mail.select(quote_folder(folder), readonly=True)
-            status, data = mail.fetch(str(mail_id), '(BODY.PEEK[])')
+            select_verified_mailref(mail, reference, readonly=True)
+            status, data = mail.uid('FETCH', reference.uid, '(BODY.PEEK[])')
 
         if status != 'OK' or not data or not data[0]:
             return None
 
-        raw = None
-        for item in data:
-            if isinstance(item, tuple):
-                raw = item[1]
-                break
+        response = select_uid_fetch(data, reference.uid) if status == 'OK' else None
+        raw = response.raw if response else None
         if not raw:
             return None
 
@@ -224,6 +222,7 @@ def main():
     # 回复模式
     parser.add_argument('--reply-to-id', help='回复指定邮件：原始邮件编号')
     parser.add_argument('--reply-folder', required=False, help='原始邮件所在文件夹(回复模式必填)')
+    parser.add_argument('--reply-uidvalidity', required=False, help='回复邮件搜索结果中的 UIDVALIDITY')
     parser.add_argument('--reply-quote', action='store_true', help='在正文中引用原邮件内容')
     # 主题（--subject 或 --subject-file 二选一；回复模式下可省略，自动加Re:前缀）
     parser.add_argument('--subject', help='邮件主题')
@@ -241,16 +240,33 @@ def main():
 
     args = parser.parse_args()
 
+    reply_options_supplied = any((
+        args.reply_to_id is not None,
+        args.reply_folder is not None,
+        args.reply_uidvalidity is not None,
+        args.reply_quote,
+    ))
+    if reply_options_supplied:
+        try:
+            if not args.reply_to_id:
+                raise MailRefError('使用回复参数时 --reply-to-id 为必填参数')
+            if not args.reply_folder or not args.reply_uidvalidity:
+                raise MailRefError('回复邮件时 --reply-folder 和 --reply-uidvalidity 为必填参数')
+            MailRef(args.reply_folder, args.reply_uidvalidity, args.reply_to_id)
+        except MailRefError as exc:
+            print(json.dumps({'status': 'error', 'message': str(exc), 'code': 'invalid_mailref'}, ensure_ascii=False))
+            return 1
+
     email_addr, auth_code = get_credentials()
     if not email_addr or not auth_code:
         print(json.dumps({'status': 'error', 'message': '缺少凭证信息，请先配置QQ邮箱地址和授权码'}, ensure_ascii=False))
-        return
+        return 1
 
     # 测试模式
     if args.test:
         result = test_smtp(email_addr, auth_code)
         print(json.dumps(result, ensure_ascii=False))
-        return
+        return 0 if result.get('status') == 'success' else 1
 
     # ---- 回复模式 ----
     in_reply_to = None
@@ -259,13 +275,10 @@ def main():
     subject = args.subject
 
     if args.reply_to_id:
-        if not args.reply_folder:
-            print(json.dumps({'status': 'error', 'message': '回复邮件时 --reply-folder 为必填参数'}, ensure_ascii=False))
-            return
-        orig = get_original_email(email_addr, auth_code, args.reply_to_id, args.reply_folder)
+        orig = get_original_email(email_addr, auth_code, args.reply_to_id, args.reply_folder, args.reply_uidvalidity)
         if not orig:
             print(json.dumps({'status': 'error', 'message': f'无法获取原始邮件(编号:{args.reply_to_id}, 文件夹:{args.reply_folder})'}, ensure_ascii=False))
-            return
+            return 1
 
         # 自动填充收件人：优先 Reply-To，其次 From
         if not to:
@@ -293,7 +306,7 @@ def main():
                 file_content = read_file_content(args.body_file)
                 if file_content is None:
                     print(json.dumps({'status': 'error', 'message': f'无法读取正文文件: {args.body_file}'}, ensure_ascii=False))
-                    return
+                    return 1
                 body = file_content
 
             quote_header = f"\n\n--- 原始邮件 ---\n发件人: {orig['from']}\n主题: {orig['subject']}\n\n"
@@ -304,7 +317,7 @@ def main():
                 file_content = read_file_content(args.body_file)
                 if file_content is None:
                     print(json.dumps({'status': 'error', 'message': f'无法读取正文文件: {args.body_file}'}, ensure_ascii=False))
-                    return
+                    return 1
                 body = file_content
     else:
         # ---- 新邮件模式 ----
@@ -316,7 +329,7 @@ def main():
             file_content = read_file_content(args.body_file)
             if file_content is None:
                 print(json.dumps({'status': 'error', 'message': f'无法读取正文文件: {args.body_file}'}, ensure_ascii=False))
-                return
+                return 1
             body = file_content
 
     # 解析主题文件
@@ -324,7 +337,7 @@ def main():
         file_content = read_file_content(args.subject_file)
         if file_content is None:
             print(json.dumps({'status': 'error', 'message': f'无法读取主题文件: {args.subject_file}'}, ensure_ascii=False))
-            return
+            return 1
         subject = file_content.strip()
 
     if not subject:
@@ -347,8 +360,15 @@ def main():
         in_reply_to=in_reply_to,
         references=references
     )
+    if args.reply_to_id:
+        result['reply_to'] = {
+            'folder': args.reply_folder,
+            'uidvalidity': args.reply_uidvalidity,
+            'mail_id': args.reply_to_id,
+        }
     print(json.dumps(result, ensure_ascii=False))
+    return 0 if result.get('status') == 'success' else 1
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

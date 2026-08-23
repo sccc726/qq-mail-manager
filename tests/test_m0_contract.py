@@ -100,10 +100,10 @@ class BaselineCliTests(OfflineTestCase):
         invocations = (
             ("list_folders.py", []),
             ("search_emails.py", []),
-            ("get_email.py", ["--mail_ids", "1", "--folder", "INBOX"]),
-            ("download_attachment.py", ["--mail_ids", "1", "--folder", "INBOX"]),
-            ("mark_email.py", ["--mail_ids", "1", "--action", "read", "--folder", "INBOX"]),
-            ("move_email.py", ["--mail_ids", "1", "--src_folder", "INBOX", "--dst_folder", "Archive"]),
+            ("get_email.py", ["--mail_ids", "1", "--folder", "INBOX", "--uidvalidity", "1"]),
+            ("download_attachment.py", ["--mail_ids", "1", "--folder", "INBOX", "--uidvalidity", "1"]),
+            ("mark_email.py", ["--mail_ids", "1", "--action", "read", "--folder", "INBOX", "--uidvalidity", "1"]),
+            ("move_email.py", ["--mail_ids", "1", "--src_folder", "INBOX", "--uidvalidity", "1", "--dst_folder", "Archive"]),
             ("send_email.py", ["--to", "friend@example.test", "--subject", "hello", "--body", "body"]),
         )
         env = os.environ.copy()
@@ -131,14 +131,14 @@ class BehaviorFeatureTests(OfflineTestCase):
         messages = [FakeMessage(str(100 + index), sample_message(subject="meeting", body=str(index)))
                     for index in range(20)]
         imap = FakeIMAP({"INBOX": FakeMailbox(uidvalidity="77", messages=messages)})
-        with patch.object(module.imaplib, "IMAP4_SSL", return_value=imap):
+        with patch("qqmail_core.connections.imaplib.IMAP4_SSL", return_value=imap):
             result = module.query_emails("me@example.test", "token", query="meeting", limit=20)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["total_matched"], 20)
         self.assertEqual(result["total"], 15)
         self.assertTrue(result["has_more"])
         self.assertEqual(result["tip"], "还有更多结果，使用 --offset 15 查看下一页")
-        self.assertEqual([item["mail_id"] for item in result["emails"]], [str(i) for i in range(20, 5, -1)])
+        self.assertEqual([item["mail_id"] for item in result["emails"]], [str(119 - i) for i in range(15)])
 
     def test_basic_mime_parsing_keeps_body_and_attachment_metadata(self):
         module = load_script("get_email.py")
@@ -173,8 +173,9 @@ class BehaviorFeatureTests(OfflineTestCase):
             "Archive": FakeMailbox(),
         })
         before = imap.snapshot()
-        with patch.object(module.imaplib, "IMAP4_SSL", return_value=imap):
-            result = module.move_emails("me@example.test", "token", ["1"], "INBOX", "Archive", confirm=False)
+        with patch("qqmail_core.connections.imaplib.IMAP4_SSL", return_value=imap):
+            result = module.move_emails("me@example.test", "token", ["9"], "INBOX", "Archive", confirm=False,
+                                        uidvalidity="1")
         self.assertEqual(result["status"], "preview")
         self.assertEqual(before, imap.snapshot())
         self.assertNotIn(("EXPUNGE",), imap.log)
@@ -183,43 +184,42 @@ class BehaviorFeatureTests(OfflineTestCase):
 class FutureRegressionTargets(OfflineTestCase):
     """Known defects remain visible but are not accepted as compatibility behavior."""
 
-    @unittest.expectedFailure
     def test_uid_fetch_is_required_after_uid_migration(self):
         module = load_script("get_email.py")
         imap = FakeIMAP({"INBOX": FakeMailbox(messages=[FakeMessage("88", sample_message())])})
-        with patch.object(module.imaplib, "IMAP4_SSL", return_value=imap):
-            module.get_emails("me@example.test", "token", ["88"], "INBOX")
+        with patch("qqmail_core.connections.imaplib.IMAP4_SSL", return_value=imap):
+            module.get_emails("me@example.test", "token", ["88"], "INBOX", "1")
         self.assertTrue(any(call[:2] == ("UID", "FETCH") for call in imap.log))
 
-    @unittest.expectedFailure
     def test_same_mail_id_in_two_folders_requires_distinct_mailrefs(self):
         module = load_script("search_emails.py")
         imap = FakeIMAP({
             "INBOX": FakeMailbox(uidvalidity="100", messages=[FakeMessage("9", sample_message(subject="same"))]),
             "Archive": FakeMailbox(uidvalidity="200", messages=[FakeMessage("9", sample_message(subject="same"))]),
         })
-        with patch.object(module.imaplib, "IMAP4_SSL", return_value=imap):
+        with patch("qqmail_core.connections.imaplib.IMAP4_SSL", return_value=imap):
             result = module.query_emails("me@example.test", "token", query="same", all_folders=True)
         self.assertEqual({(item["folder"], item["uidvalidity"], item["mail_id"]) for item in result["emails"]},
                          {("INBOX", "100", "9"), ("Archive", "200", "9")})
 
-    @unittest.expectedFailure
     def test_search_select_failure_must_not_be_reported_as_empty_success(self):
         module = load_script("search_emails.py")
         imap = FakeIMAP({"INBOX": FakeMailbox()}, failures={"select": True})
-        with patch.object(module.imaplib, "IMAP4_SSL", return_value=imap):
+        with patch("qqmail_core.connections.imaplib.IMAP4_SSL", return_value=imap):
             result = module.query_emails("me@example.test", "token")
         self.assertEqual(result["status"], "error")
 
-    @unittest.expectedFailure
     def test_confirmed_move_must_not_use_global_expunge(self):
         module = load_script("move_email.py")
         imap = FakeIMAP({
             "INBOX": FakeMailbox(messages=[FakeMessage("9", sample_message())]),
             "Archive": FakeMailbox(),
         })
-        with patch.object(module.imaplib, "IMAP4_SSL", return_value=imap):
-            module.move_emails("me@example.test", "token", ["1"], "INBOX", "Archive", confirm=True)
+        with patch("qqmail_core.connections.imaplib.IMAP4_SSL", return_value=imap):
+            preview = module.move_emails("me@example.test", "token", ["9"], "INBOX", "Archive",
+                                         confirm=False, uidvalidity="1")
+            module.move_emails("me@example.test", "token", ["9"], "INBOX", "Archive", confirm=True,
+                               uidvalidity="1", confirmation=preview["confirmation"])
         self.assertNotIn(("EXPUNGE",), imap.log)
 
     @unittest.expectedFailure
