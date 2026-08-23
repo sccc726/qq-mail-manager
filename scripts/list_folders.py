@@ -2,7 +2,6 @@
 """List QQ Mail folders using the M1 shared connection and folder core."""
 from __future__ import annotations
 
-import argparse
 import pathlib
 import sys
 
@@ -14,7 +13,8 @@ if str(SCRIPT_DIR) not in sys.path:
 from qqmail_core.config import CredentialError, Credentials, load_credentials
 from qqmail_core.connections import imap_connection
 from qqmail_core.folders import FolderError, parse_list_response
-from qqmail_core.results import emit_json, error_result
+from qqmail_core.results import (ArgumentParseError, StructuredArgumentParser,
+                                 argument_error_result, emit_json, error_result)
 
 
 def get_credentials():
@@ -44,8 +44,11 @@ def list_folders(email_addr: str, auth_code: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="列出QQ邮箱所有文件夹")
-    parser.parse_args()
+    parser = StructuredArgumentParser(description="列出QQ邮箱所有文件夹")
+    try:
+        parser.parse_args()
+    except ArgumentParseError as exc:
+        return emit_json(argument_error_result(str(exc)))
     try:
         credentials = load_credentials()
     except CredentialError as exc:

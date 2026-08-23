@@ -54,7 +54,8 @@ def _attachment_manifest(path_value: str | Path) -> dict[str, str | int]:
 
 def send_manifest(*, account: str, to: Iterable[str] | str, cc: Iterable[str] | str | None,
                   bcc: Iterable[str] | str | None, subject: str, body: str,
-                  attachments: Iterable[str | Path] = (), reply_to: MailRef | None = None) -> dict:
+                  attachments: Iterable[str | Path] = (), reply_to: MailRef | None = None,
+                  html: bool = False) -> dict:
     """Create a deterministic send preview without opening an SMTP connection."""
     manifest = {
         "kind": "send",
@@ -64,6 +65,7 @@ def send_manifest(*, account: str, to: Iterable[str] | str, cc: Iterable[str] | 
         "bcc": _address_values(bcc),
         "subject": subject,
         "body_sha256": _digest_bytes(body.encode("utf-8")),
+        "html": bool(html),
         "attachments": [_attachment_manifest(path) for path in attachments],
         "reply_to": reply_to.public_dict() if reply_to else None,
     }

@@ -118,6 +118,26 @@ def _parse_quoted(value: str, index: int) -> tuple[str, int]:
     raise FolderError("LIST 响应中的引号字符串未结束")
 
 
+def _parse_mailbox_name(value: str, index: int) -> tuple[str, int]:
+    """Parse a LIST mailbox name as quoted string or atom; literals stay unsupported."""
+    if index >= len(value):
+        raise FolderError("LIST 响应缺少邮箱名")
+    if value[index] == '"':
+        return _parse_quoted(value, index)
+    if value[index] == "{":
+        raise FolderError("LIST literal 邮箱名暂不支持")
+    end = index
+    while end < len(value) and not value[end].isspace():
+        end += 1
+    atom = value[index:end]
+    if not atom:
+        raise FolderError("LIST 响应缺少邮箱名")
+    if any(char in '(){ %*"\\]' for char in atom):
+        raise FolderError("LIST 响应中的邮箱 atom 非法")
+    _reject_controls(atom)
+    return atom, end
+
+
 def parse_list_response(response: bytes | str) -> Folder:
     """Parse a single IMAP LIST response into a wire/display folder model."""
     raw = response.decode("utf-8", errors="replace") if isinstance(response, bytes) else str(response)
@@ -136,7 +156,7 @@ def parse_list_response(response: bytes | str) -> Folder:
         delimiter, index = _parse_quoted(raw, index)
     while index < len(raw) and raw[index].isspace():
         index += 1
-    wire_name, index = _parse_quoted(raw, index)
+    wire_name, index = _parse_mailbox_name(raw, index)
     if raw[index:].strip():
         raise FolderError("LIST 响应包含未解析内容")
     _reject_controls(wire_name)

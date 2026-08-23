@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import json
 import pathlib
 import sys
 import tempfile
@@ -24,7 +25,8 @@ from qqmail_core.connections import imap_connection, smtp_connection, tls_contex
 from qqmail_core.folders import (FolderError, choose_trash_folder, decode_modified_utf7,
                                  encode_modified_utf7, parse_list_response, quote_mailbox)
 from qqmail_core.mailref import MailRef, MailRefError, parse_uid, select_verified_mailref
-from qqmail_core.results import EXIT_CODES, batch_result, emit_json, error_result
+from qqmail_core.results import (EXIT_CODES, ReservedResultFieldError, batch_result,
+                                 emit_json, error_result)
 
 
 def load_list_script():
@@ -64,6 +66,18 @@ class ResultProtocolTests(OfflineTestCase):
         self.assertEqual(emit_json({"status": "preview", "message": "safe"}, stream=output), 0)
         self.assertEqual(output.getvalue().count("\n"), 1)
         self.assertEqual(error_result("bad input")["status"], "error")
+
+    def test_extra_fields_cannot_replace_reserved_protocol_fields(self):
+        for reserved in ("status", "message", "success", "failed", "success_count", "failed_count", "total"):
+            with self.subTest(factory="error_result", reserved=reserved):
+                with self.assertRaises(ReservedResultFieldError):
+                    error_result("safe", **{reserved: "forged"})
+        for reserved in ("status", "message", "code", "success", "success_count", "failed_count", "total"):
+            with self.subTest(factory="batch_result", reserved=reserved):
+                with self.assertRaises(ReservedResultFieldError):
+                    batch_result(succeeded=[], failed=[], **{reserved: "forged"})
+        # ``failed`` is a dedicated batch input, never an updateable extra field.
+        self.assertEqual(batch_result(succeeded=["ok"], failed=["bad"])["failed"], ["bad"])
 
 
 class ConfigAndLifecycleTests(OfflineTestCase):
@@ -135,6 +149,14 @@ class FolderModelTests(OfflineTestCase):
         with self.assertRaises(FolderError):
             parse_list_response('(\\HasNoChildren) "/" "unterminated')
 
+    def test_unquoted_mailbox_atom_is_supported_but_literals_and_trailing_data_fail(self):
+        folder = parse_list_response('(\\HasNoChildren) "/" INBOX')
+        self.assertEqual(folder.wire_name, "INBOX")
+        with self.assertRaises(FolderError):
+            parse_list_response('(\\HasNoChildren) "/" {5}')
+        with self.assertRaises(FolderError):
+            parse_list_response('(\\HasNoChildren) "/" INBOX trailing')
+
 
 class MailRefTests(OfflineTestCase):
     def test_uid_parser_rejects_sequence_sets_before_credentials_or_network(self):
@@ -180,6 +202,14 @@ class ConfirmationTests(OfflineTestCase):
                                          subject="subject", body="body", attachments=[attachment], reply_to=first)
         self.assertFalse(confirmation_matches(changed_send, send["confirmation"]))
 
+    def test_html_mode_is_bound_by_the_send_confirmation(self):
+        plain = send_manifest(account="me@example.test", to="to@example.test", cc=None, bcc=None,
+                              subject="subject", body="<b>body</b>")
+        html = send_manifest(account="me@example.test", to="to@example.test", cc=None, bcc=None,
+                             subject="subject", body="<b>body</b>", html=True)
+        self.assertFalse(confirmation_matches(html, plain["confirmation"]))
+        self.assertTrue(confirmation_matches(plain, plain["confirmation"]))
+
 
 class ListFoldersIntegrationTests(OfflineTestCase):
     def test_list_folders_uses_core_lifecycle_parser_and_result_protocol(self):
@@ -200,3 +230,16 @@ class ListFoldersIntegrationTests(OfflineTestCase):
             code = module.main()
         self.assertEqual(code, 1)
         self.assertEqual(stdout.getvalue().count("\n"), 1)
+
+    def test_list_invalid_arguments_output_one_structured_error_without_stderr_usage(self):
+        module = load_list_script()
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(sys, "argv", ["list_folders.py", "--unexpected"]), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = module.main()
+        self.assertEqual(code, 1)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(stdout.getvalue().count("\n"), 1)
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["code"], "invalid_arguments")
