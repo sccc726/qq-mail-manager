@@ -150,10 +150,14 @@ class BehaviorFeatureTests(OfflineTestCase):
     def test_reply_headers_and_envelope_are_constructed(self):
         module = load_script("send_email.py")
         smtp = FakeSMTP()
-        with patch.object(module.smtplib, "SMTP", return_value=smtp):
+        preview = module.send_email("me@example.test", "token", "to@example.test", "Re: topic", "reply",
+                                    cc="cc@example.test", bcc="bcc@example.test",
+                                    in_reply_to="<original@example.test>", references="<thread@example.test>")
+        with patch("qqmail_core.connections.smtplib.SMTP", return_value=smtp):
             result = module.send_email("me@example.test", "token", "to@example.test", "Re: topic", "reply",
                                        cc="cc@example.test", bcc="bcc@example.test",
-                                       in_reply_to="<original@example.test>", references="<thread@example.test>")
+                                       in_reply_to="<original@example.test>", references="<thread@example.test>",
+                                       confirmation=preview["confirmation"])
         self.assertEqual(result["status"], "success")
         self.assertEqual(smtp.envelopes[0][1], ["to@example.test", "cc@example.test", "bcc@example.test"])
         parsed = smtp.parsed_messages[0]
@@ -222,10 +226,10 @@ class FutureRegressionTargets(OfflineTestCase):
                                uidvalidity="1", confirmation=preview["confirmation"])
         self.assertNotIn(("EXPUNGE",), imap.log)
 
-    @unittest.expectedFailure
     def test_send_requires_a_matching_confirmation_before_smtp_transfer(self):
         module = load_script("send_email.py")
         smtp = FakeSMTP()
-        with patch.object(module.smtplib, "SMTP", return_value=smtp):
-            module.send_email("me@example.test", "token", "to@example.test", "subject", "body")
+        with patch("qqmail_core.connections.smtplib.SMTP", return_value=smtp):
+            result = module.send_email("me@example.test", "token", "to@example.test", "subject", "body")
+        self.assertEqual(result["status"], "preview")
         self.assertEqual(smtp.envelopes, [])

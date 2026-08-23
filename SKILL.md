@@ -11,7 +11,7 @@ metadata: {"openclaw":{"requires":{"env":["QQ_EMAIL","QQ_EMAIL_AUTH_CODE"]},"pri
 以下规则在每次操作中均不可违反，优先级高于所有其他指导：
 
 1. **唯一定位**：所有定位邮件的操作必须使用 `folder + uidvalidity + mail_id`。`mail_id` 保留该公开名称，但始终是十进制 UID 字符串；不得把它解释为 sequence number。
-2. **操作确认**：删除/移动邮件必须先预览（不加 `--confirm`）并展示给用户，用户明确确认后才执行；发送邮件必须先展示收件人、主题、正文摘要，确认后才发送
+2. **操作确认**：删除/移动邮件必须先预览（不加 `--confirm`）并展示给用户，用户明确确认后才执行；发送邮件必须先展示规范化收件人、主题、正文摘要和附件清单，之后只能携带同一预览的 `--confirm --confirmation` 发送
 3. **分页展示**：每次只调用一次 search_emails.py，将返回结果展示给用户。当 `has_more=true` 时，在末尾提示"还有更多邮件，需要查看下一页吗？"后停止——无论用户要求多少封、还差几封凑齐，都不得自行发起第二次调用，必须等用户明确要求翻页后才可使用 `--offset`
 4. **表格模板**：向用户展示邮件信息时一律使用以下表格，即使只有一封邮件也必须使用，禁止自由叙述：
 
@@ -138,6 +138,9 @@ python "{baseDir}/scripts/move_email.py" --mail_ids 42 --src_folder INBOX --uidv
 # 发送纯文本邮件
 python "{baseDir}/scripts/send_email.py" --to <收件人> --subject "<主题>" --body "<正文>"
 
+# 上一步只会返回 status=preview；使用原样参数和 confirmation 确认发送
+python "{baseDir}/scripts/send_email.py" --to <收件人> --subject "<主题>" --body "<正文>" --confirm --confirmation <预览返回的confirmation>
+
 # 发送HTML邮件
 python "{baseDir}/scripts/send_email.py" --to <收件人> --subject "<主题>" --body "<h1>Hello</h1>" --html
 
@@ -147,10 +150,13 @@ python "{baseDir}/scripts/send_email.py" --to <收件人> --subject "<主题>" -
 # 回复邮件
 python "{baseDir}/scripts/send_email.py" --reply-to-id <UID> --reply-folder INBOX --reply-uidvalidity <UIDVALIDITY> --body "<回复内容>"
 
+# 确认回复（同样必须先取得预览摘要）
+python "{baseDir}/scripts/send_email.py" --reply-to-id <UID> --reply-folder INBOX --reply-uidvalidity <UIDVALIDITY> --body "<回复内容>" --confirm --confirmation <预览返回的confirmation>
+
 # 回复并引用原文
 python "{baseDir}/scripts/send_email.py" --reply-to-id <UID> --reply-folder INBOX --reply-uidvalidity <UIDVALIDITY> --reply-quote --body "<回复内容>"
 
-# 测试SMTP连接
+# 仅测试SMTP TLS与认证；不会发送邮件、读取IMAP或读取本地邮件文件
 python "{baseDir}/scripts/send_email.py" --test
 ```
 
@@ -172,7 +178,7 @@ python "{baseDir}/scripts/send_email.py" --test
 - 脚本: [scripts/download_attachment.py](scripts/download_attachment.py) — 下载附件。参数: `--mail_ids`(UID，必填), `--folder`(必填), `--uidvalidity`(必填), `--dir`(输出目录, 默认当前目录), `--file`(仅下载指定附件名)
 - 脚本: [scripts/mark_email.py](scripts/mark_email.py) — 标记已读/未读。参数: `--mail_ids`(UID，必填), `--action`(read/unread), `--folder`(必填), `--uidvalidity`(必填)
 - 脚本: [scripts/move_email.py](scripts/move_email.py) — 移动或删除邮件。参数: `--mail_ids`(UID，必填), `--src_folder`(必填), `--uidvalidity`(必填), `--dst_folder`(与--delete二选一), `--delete`(移至垃圾箱, 与--dst_folder二选一), `--confirm` 与 `--confirmation`(确认执行)
-- 脚本: [scripts/send_email.py](scripts/send_email.py) — 发送/回复邮件。参数: `--to`(收件人, 回复模式可省略), `--subject`(主题, 与--subject-file二选一, 回复模式可省略), `--subject-file`(从文件读主题), `--body`(正文, 与--body-file二选一), `--body-file`(从文件读正文, 优先于--body), `--html`(HTML格式), `--cc`(抄送), `--bcc`(密送), `--attachments`(附件路径), `--reply-to-id`(回复 UID), `--reply-folder` 与 `--reply-uidvalidity`(回复时必填), `--reply-quote`(引用原文), `--test`(测试SMTP)
+- 脚本: [scripts/send_email.py](scripts/send_email.py) — 发送/回复邮件。参数: `--to`(收件人, 回复模式可省略), `--subject`(主题, 与--subject-file二选一, 回复模式可省略), `--subject-file`(从文件读主题), `--body`(正文, 与--body-file二选一), `--body-file`(从文件读正文), `--html`(HTML格式), `--cc`(抄送), `--bcc`(密送，绝不进入 MIME 头), `--attachments`(附件路径), `--reply-to-id`(回复 UID), `--reply-folder` 与 `--reply-uidvalidity`(回复时必填), `--reply-quote`(引用原文), `--confirm` 与 `--confirmation`(仅匹配预览摘要时发送), `--test`(仅测试 SMTP TLS/认证，`sent:false`，不发送)
 - 参考: [references/qq-email-config.md](references/qq-email-config.md) — 凭证配置引导、授权码获取、服务器信息、常见问题
 
 ## 注意事项
@@ -189,6 +195,7 @@ python "{baseDir}/scripts/send_email.py" --test
 ### 发送规范
 - 正文含换行、引号、HTML 或超过200字符时，优先使用 `--body-file` 从文件读取，避免命令行转义问题
 - 复杂主题使用 `--subject-file`
+- 收件人可使用 Unicode 显示名，但邮箱地址本身当前仅接受 ASCII；去重时保留 local-part 大小写，只将域名按大小写无关比较。
 
 ### 其他
 - 不确定文件夹名称时，先调用 list_folders 获取可用值

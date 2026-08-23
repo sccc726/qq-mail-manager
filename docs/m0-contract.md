@@ -34,7 +34,10 @@
 ## 预览与确认
 
 - 移动/删除默认返回 `preview`，不改变邮箱状态。预览清单至少绑定操作、源/目标文件夹和每个 MailRef；确认请求必须携带由该清单得到的 `confirmation` 摘要。
-- 发送默认返回 `preview`，包括规范化的 To/CC/BCC、主题、正文摘要、附件清单和 `confirmation` 摘要。只有显式确认且摘要仍匹配时才可建立 SMTP 连接并发送一次。
-- 发送和移动的预览字段或文件内容任一变化，都必须使旧确认摘要失效。
+- 发送默认返回 `preview`，包括规范化的 To/CC/BCC、主题、正文摘要、附件清单和 `confirmation` 摘要。只有同时给出 `--confirm --confirmation <摘要>`，且重建后的清单仍匹配时，才可建立一个 SMTP 连接并调用一次 `sendmail`；这不是跨进程 exactly-once 承诺。
+- 发送清单绑定账号、规范化邮件头/信封收件人、主题、正文内容、HTML、附件的顺序/规范路径/类型/大小/mtime/内容哈希、主题和正文文件元数据，以及回复 MailRef、原邮件内容和线程头。任一预览字段或文件内容变化都会使旧摘要失效。
+- Bcc 只存在于预览清单和 SMTP 信封，绝不写入 MIME 头。SMTP 拒收映射为 `success`、`partial` 或 `error`；传输在 `sendmail` 后异常时会标记 `delivery_indeterminate`，不会声称邮件未发送。
+- `send_email.py --test` 只连接、执行 TLS 和认证后关闭；它返回 `sent:false`，不构建 MIME、不读取附件/正文文件、不读取 IMAP，且不能和任何发送、回复或确认参数组合。
+- 发送地址使用 ASCII dot-atom 和合法域标签；Unicode 仅可用于显示名（尚未协商 SMTPUTF8）。去重保留 local-part 大小写，仅将域名按大小写无关比较。
 
-移动确认摘要与 UID 实现已在 C4/C5/U6 完成；发送预览确认仍属于 M3 的工作，M0 对未确认发送保留预期失败回归测试。
+移动确认摘要与 UID 实现已在 C4/C5/U6 完成；M3 已将未确认发送的原预期失败回归转为正常通过测试。

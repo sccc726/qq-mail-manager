@@ -368,10 +368,14 @@ class FakeSMTP:
 
     def quit(self):
         self.log.append(("QUIT",))
+        if self.failures.get("quit"):
+            raise OSError("quit failed")
         self.closed = True
         return 221, b"bye"
 
-    close = quit
+    def close(self):
+        self.log.append(("CLOSE",))
+        self.closed = True
 
     @property
     def parsed_messages(self):
