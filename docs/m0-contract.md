@@ -27,7 +27,7 @@
 
 ## 搜索与批量结果
 
-搜索结果包含 `emails`、`total_matched`、`total_displayable`、`total` 和 `has_more`；有下一页时还包含 `next_offset` 和可选的人类提示 `tip`。`total_matched` 是 UID SEARCH 的命中数，`total_displayable` 是成功 FETCH 且通过精确 recent 过滤后可分页展示的数量；FETCH 失败在 `failed` 中保留并使结果为 `partial`，不会伪装为空成功。`limit` 是本次展示范围，`offset` 是零基页偏移；单页最多 15 项。按字段或关键词的过滤条件会原样回显在顶层。
+搜索结果包含 `emails`、`total_matched`、`total_displayable`、`total` 和 `has_more`；有下一页时还包含 `next_offset` 和可选的人类提示 `tip`。`total_matched` 是 UID SEARCH 的命中数，`total_displayable` 是成功取得 metadata、通过精确 recent 过滤并进入可分页候选集的数量；为避免全量邮件头 FETCH，这个候选集在页内 header/preview FETCH 前确定。`total` 始终等于实际返回的 `emails` 数量；页内 FETCH 失败保留在 `failed` 中，并使有成功项的结果为 `partial`、整页无成功项的结果为 `error`，不会伪装为空成功。`limit` 是本次展示范围，`offset` 是零基页偏移；单页最多 15 项。按字段或关键词的过滤条件会原样回显在顶层。
 
 批量读取、下载、标记和移动的返回包含目标集合、成功集合/条目和失败集合/条目。只要一个目标失败且另一个成功，状态为 `partial`；全部失败为 `error`。失败不得伪装为空结果或成功。
 
@@ -38,6 +38,14 @@
 - 发送清单绑定账号、规范化邮件头/信封收件人、主题、正文内容、HTML、附件的顺序/规范路径/类型/大小/mtime/内容哈希、主题和正文文件元数据，以及回复 MailRef、原邮件内容和线程头。任一预览字段或文件内容变化都会使旧摘要失效。
 - Bcc 只存在于预览清单和 SMTP 信封，绝不写入 MIME 头。SMTP 拒收映射为 `success`、`partial` 或 `error`；传输在 `sendmail` 后异常时会标记 `delivery_indeterminate`，不会声称邮件未发送。
 - `send_email.py --test` 只连接、执行 TLS 和认证后关闭；它返回 `sent:false`，不构建 MIME、不读取附件/正文文件、不读取 IMAP，且不能和任何发送、回复或确认参数组合。
+
+- `get_email.py` 的 `body` 保留原字段名但有 64KiB 安全上限；同时返回 `body_truncated` 和 `body_bytes_fetched`，不得把截断正文表述为完整正文。
+
+## M4 本机目录与资源策略
+
+本仓库的默认使用者是当前电脑上的单一交互式所有者。因此发送附件路径和下载目录可以自由选择；实现会规范化绝对路径，但不设可信根，也不默认拒绝链接。这一选择依赖发送文件哈希和预览确认、下载原子不覆盖提交、Windows 安全单组件文件名以及单附件 50 MiB/单次 100 MiB 配额。
+
+严格目录沙箱不是当前默认值。只要运行模式变为多用户、服务/API、远程入口、不可信路径输入、共享目录或高权限账户，就必须配置发送只读根、下载写根并拒绝符号链接、junction 与 reparse point，同时采用更严格的资源配额。静态无效下载路径在读取凭据或建立 IMAP/SMTP 连接前返回单个 JSON 错误。
 - 发送地址使用 ASCII dot-atom 和合法域标签；Unicode 仅可用于显示名（尚未协商 SMTPUTF8）。去重保留 local-part 大小写，仅将域名按大小写无关比较。
 
 移动确认摘要与 UID 实现已在 C4/C5/U6 完成；M3 已将未确认发送的原预期失败回归转为正常通过测试。

@@ -225,7 +225,7 @@ class M2FollowupContractTests(OfflineTestCase):
     def test_uid_fetch_selector_requires_exact_uid_and_supports_literal_first_metadata_last(self):
         response = select_uid_fetch([
             (b'5 (UID 5 BODY[])', b'wrong'),
-            (b'right body', b'6 (UID 6 BODY[])'),
+            (b'right body', b'6 (UID 6 BODY[]'),
             b' INTERNALDATE "02-Jan-2024 10:00:00 +0000")',
         ], "6")
         self.assertIsNotNone(response)
@@ -233,7 +233,7 @@ class M2FollowupContractTests(OfflineTestCase):
         self.assertIn(b"INTERNALDATE", response.metadata)
         self.assertIsNone(select_uid_fetch([(b'5 (UID 5 BODY[])', b'wrong')], "6"))
         raw_with_uid = b"untrusted mail content: UID 9) is not protocol metadata"
-        response = select_uid_fetch([(b'1 (UID 9 BODY[] {42}', raw_with_uid), b' INTERNALDATE "02-Jan-2024 10:00:00 +0000")'], "9")
+        response = select_uid_fetch([(b'1 (UID 9 BODY[]', raw_with_uid), b' INTERNALDATE "02-Jan-2024 10:00:00 +0000")'], "9")
         self.assertIsNotNone(response)
         self.assertEqual(response.raw, raw_with_uid)
         self.assertTrue(uid_fetch_exists([b"1 (UID 9)"], "9"))
@@ -256,11 +256,11 @@ class M2FollowupContractTests(OfflineTestCase):
         original_uid = imap.uid
         def trailing(command, *args):
             status, data = original_uid(command, *args)
-            if command.upper() == "FETCH" and status == "OK":
+            if command.upper() == "FETCH" and status == "OK" and len(args) > 1 and "BODY.PEEK[]" in str(args[1]):
                 own = data[-1]
                 if isinstance(own, tuple):
                     metadata, literal = own
-                    data[-1:] = [(b'1 (BODY[] {4}', literal),
+                    data[-1:] = [(f'1 (BODY[] {{{len(literal)}}}'.encode(), literal),
                                  b' UID 9 INTERNALDATE "02-Jan-2024 10:00:00 +0000")']
             return status, data
         imap.uid = trailing

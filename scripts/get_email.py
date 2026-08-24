@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pathlib
 import sys
-from email.header import decode_header
 from email.parser import BytesParser
 
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -13,64 +12,64 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from qqmail_core.config import CredentialError, Credentials, load_credentials
 from qqmail_core.connections import imap_connection
-from qqmail_core.imap_uid import select_uid_fetch
 from qqmail_core.mailref import MailRef, MailRefError, select_verified_mailref
+from qqmail_core.mime import (bodystructure_parts, decode_header_value,
+                              decode_text, decode_transfer, extract_body_and_attachments)
+from qqmail_core.imap_uid import select_uid_section
 from qqmail_core.results import (ArgumentParseError, StructuredArgumentParser,
                                  argument_error_result, batch_result, emit_json,
                                  error_result)
 
 
-def decode_str(value):
-    if value is None:
-        return ""
-    result = []
-    for part, charset in decode_header(value):
-        if isinstance(part, bytes):
-            try:
-                result.append(part.decode(charset or "utf-8", errors="replace"))
-            except LookupError:
-                result.append(part.decode("utf-8", errors="replace"))
-        else:
-            result.append(part)
-    return "".join(result)
-
-
-def extract_body_and_attachments(message):
-    body, attachments = "", []
-    parts = message.walk() if message.is_multipart() else [message]
-    for part in parts:
-        filename = part.get_filename()
-        if filename:
-            attachments.append({"name": decode_str(filename), "type": part.get_content_type()})
-        elif not body and part.get_content_type() in {"text/plain", "text/html"}:
-            payload = part.get_payload(decode=True)
-            if payload is not None:
-                body = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
-    return body, attachments
-
-
-def _raw_from_fetch(data, uid):
-    response = select_uid_fetch(data, uid)
-    return response.raw if response else None
+decode_str = decode_header_value
+MAX_BODY_BYTES = 64 * 1024
 
 
 def fetch_single_email(mail, reference: MailRef, parser: BytesParser):
     """Fetch exactly one UID after its selected mailbox is verified."""
     select_verified_mailref(mail, reference, readonly=True)
-    status, data = mail.uid("FETCH", reference.uid, "(BODY.PEEK[])")
-    raw = _raw_from_fetch(data, reference.uid) if status == "OK" else None
-    if raw is None:
+    status, data = mail.uid("FETCH", reference.uid,
+                            "(UID BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC DATE)]<0.16384>)")
+    header = select_uid_section(data, reference.uid, "HEADER.FIELDS (SUBJECT FROM TO CC DATE)", maximum=16 * 1024) if status == "OK" else None
+    if header is None:
         return None
-    message = parser.parsebytes(raw)
-    body, attachments = extract_body_and_attachments(message)
+    message = parser.parsebytes(header.raw)
+    parts = bodystructure_parts(header.metadata)
+    text_parts = [part for part in parts if not part["attachment"] and part["type"] == "text/plain"]
+    text_parts += [part for part in parts if not part["attachment"] and part["type"] == "text/html"]
+    body = ""
+    body_truncated = False
+    body_bytes_fetched = 0
+    if text_parts:
+        section = str(text_parts[0]["section"])
+        size = text_parts[0].get("size")
+        if not isinstance(size, int) or size < 0:
+            raise MailRefError("正文大小无效")
+        if size == 0:
+            text_parts = []
+        else:
+            expected = min(size, MAX_BODY_BYTES)
+            body_status, body_data = mail.uid("FETCH", reference.uid, f"(UID BODY.PEEK[{section}]<0.{MAX_BODY_BYTES}>)")
+            body_response = select_uid_section(body_data, reference.uid, section, maximum=MAX_BODY_BYTES,
+                                                expected_length=expected) if body_status == "OK" else None
+            if body_response is None:
+                raise MailRefError("正文 section FETCH失败")
+            body_bytes_fetched = len(body_response.raw)
+            body_truncated = size > body_bytes_fetched
+            body = decode_text(decode_transfer(body_response.raw, str(text_parts[0].get("encoding") or ""), partial=body_truncated),
+                               str(text_parts[0].get("charset") or "utf-8"))
+    attachments = [{"name": decode_header_value(part["filename"]) or f"attachment-{part['section']}", "type": part["type"]}
+                   for part in parts if part["attachment"]]
     return {
         **reference.public_dict(),
-        "subject": decode_str(message.get("Subject", "")) or "(无主题)",
-        "sender": decode_str(message.get("From", "")),
-        "to": decode_str(message.get("To", "")),
-        "cc": decode_str(message.get("Cc", "")),
+        "subject": decode_header_value(message.get("Subject", "")) or "(无主题)",
+        "sender": decode_header_value(message.get("From", "")),
+        "to": decode_header_value(message.get("To", "")),
+        "cc": decode_header_value(message.get("Cc", "")),
         "date": message.get("Date", ""),
         "body": body,
+        "body_truncated": body_truncated,
+        "body_bytes_fetched": body_bytes_fetched,
         "attachments": attachments,
     }
 

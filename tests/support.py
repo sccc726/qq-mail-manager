@@ -6,6 +6,7 @@ reuse them while the production baseline still uses sequence numbers.
 from __future__ import annotations
 
 import copy
+import re
 import socket
 from dataclasses import dataclass, field
 from email.message import EmailMessage
@@ -87,6 +88,7 @@ class FakeIMAP:
         self.readonly = False
         self.logged_out = False
         self._encoding = "ascii"
+        self.fetch_literals: list[tuple[str, str, int]] = []
 
     def _failure(self, phase: str, *, folder: str | None = None, uid: str | None = None) -> bool:
         """Support global and folder/command/UID-specific deterministic failures."""
@@ -179,6 +181,38 @@ class FakeIMAP:
         except (ValueError, IndexError):
             return None
 
+    @staticmethod
+    def _quote(value: str) -> str:
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    def _mime_sections(self, raw: bytes) -> tuple[str, dict[str, bytes]]:
+        """Build a small but query-sensitive BODYSTRUCTURE/section fake."""
+        message = BytesParser().parsebytes(raw)
+        sections: dict[str, bytes] = {}
+        def leaf(part, path):
+            section = ".".join(map(str, path or (1,)))
+            payload = part.get_payload(decode=False)
+            sections[section] = payload.encode("utf-8") if isinstance(payload, str) else bytes(payload or b"")
+            params = []
+            if part.get_content_charset():
+                params.extend([self._quote("CHARSET"), self._quote(part.get_content_charset())])
+            filename = part.get_filename()
+            if filename:
+                params.extend([self._quote("NAME"), self._quote(filename)])
+            param = "(" + " ".join(params) + ")" if params else "NIL"
+            disposition = (f'("ATTACHMENT" ("FILENAME" {self._quote(filename)}))' if filename else "NIL")
+            size = len(sections[section])
+            lines = len((part.get_payload(decode=True) or b"").splitlines())
+            return (f'({self._quote(part.get_content_maintype().upper())} {self._quote(part.get_content_subtype().upper())} '
+                    f'{param} NIL NIL {self._quote((part.get("Content-Transfer-Encoding") or "8BIT").upper())} '
+                    f'{size} {lines} NIL {disposition} NIL NIL)')
+        def build(part, path=()):
+            if part.is_multipart():
+                children = [build(child, path + (index + 1,)) for index, child in enumerate(part.get_payload() or (), 0)]
+                return "(" + " ".join(children) + f' {self._quote(part.get_content_subtype().upper())} NIL NIL NIL)'
+            return leaf(part, path)
+        return build(message), sections
+
     def fetch(self, identifier: Any, query: Any):
         self.log.append(("FETCH", identifier, query))
         if self._failure("fetch"):
@@ -225,8 +259,7 @@ class FakeIMAP:
         command = command.upper()
         self.log.append(("UID", command) + args)
         uid = str(args[0].decode() if args and isinstance(args[0], bytes) else args[0]) if args else None
-        if self._failure("uid_" + command.lower(), folder=self.selected, uid=uid) or self._failure(
-                command.lower(), folder=self.selected, uid=uid):
+        if self._failure("uid_" + command.lower(), folder=self.selected, uid=uid):
             return "NO", [b"uid command failed"]
         if command == "SEARCH":
             # IMAP4.uid() forwards its arguments verbatim.  Unlike
@@ -261,7 +294,38 @@ class FakeIMAP:
             sequence = self._mailbox().messages.index(message) + 1
             if len(args) > 1 and str(args[1]) == "(UID)":
                 return "OK", [f"{sequence} (UID {message.uid})".encode()]
+            query = str(args[1]) if len(args) > 1 else ""
+            parsed = BytesParser().parsebytes(message.raw)
+            structure, sections = self._mime_sections(message.raw)
+            if query == "(UID INTERNALDATE)":
+                return "OK", [f'{sequence} (UID {message.uid} INTERNALDATE "{message.internaldate}")'.encode()]
+            if query == "(UID BODYSTRUCTURE)":
+                return "OK", [f"{sequence} (UID {message.uid} BODYSTRUCTURE {structure})".encode()]
+            if "HEADER.FIELDS" in query:
+                header = (f"Subject: {parsed.get('Subject', '')}\r\n"
+                          f"From: {parsed.get('From', '')}\r\n"
+                          f"To: {parsed.get('To', '')}\r\n"
+                          f"Cc: {parsed.get('Cc', '')}\r\n"
+                          f"Date: {parsed.get('Date', '')}\r\n\r\n").encode("utf-8")
+                requested_header = re.search(r"BODY\.PEEK\[([^\]]+)\]", query)
+                header_section = requested_header.group(1) if requested_header else "HEADER.FIELDS (SUBJECT FROM DATE)"
+                meta = (f'{sequence} (UID {message.uid} INTERNALDATE "{message.internaldate}" '
+                        f'BODYSTRUCTURE {structure} '
+                        f'BODY[{header_section}]<0>)').encode()
+                self.fetch_literals.append((message.uid, query, len(header)))
+                return "OK", [(meta, header)]
+            partial = re.search(r"BODY\.PEEK\[([0-9.]+)\]<0\.(\d+)>", query)
+            if partial:
+                section, bound = partial.group(1), int(partial.group(2))
+                payload = sections.get(section)
+                if payload is None:
+                    return "NO", [b"no such section"]
+                meta = f"{sequence} (UID {message.uid} BODY[{section}]<0>)".encode()
+                literal = payload[:bound]
+                self.fetch_literals.append((message.uid, query, len(literal)))
+                return "OK", [(meta, literal)]
             meta = (f'{sequence} (UID {message.uid} INTERNALDATE "{message.internaldate}" BODY[])').encode()
+            self.fetch_literals.append((message.uid, query, len(message.raw)))
             return "OK", [(meta, message.raw)]
         if command == "STORE":
             if self._failure("store", folder=self.selected, uid=uid):
