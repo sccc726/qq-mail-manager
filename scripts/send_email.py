@@ -9,7 +9,9 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from qqmail_core.sending import *  # re-export compatibility API
 from qqmail_core.sending import _valid_address  # legacy test/import compatibility
+from qqmail_core.results import configure_cli_stdio
 
 
 if __name__ == "__main__":
+    configure_cli_stdio()
     raise SystemExit(main())

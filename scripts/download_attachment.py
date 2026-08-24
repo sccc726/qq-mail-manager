@@ -8,7 +8,9 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from qqmail_core.attachments import *  # re-export compatibility API
+from qqmail_core.results import configure_cli_stdio
 
 
 if __name__ == "__main__":
+    configure_cli_stdio()
     raise SystemExit(main())

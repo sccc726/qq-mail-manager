@@ -291,6 +291,9 @@ def _commit_without_overwrite(temporary: pathlib.Path, directory: pathlib.Path, 
             return destination
         published = os.stat(destination, follow_symlinks=False)
         if not _same_identity(published, source_identity):
+            # Never unlink an identity that was not created from the pinned
+            # source descriptor: a second pathname swap could otherwise make
+            # cleanup delete a foreign directory entry.
             _unlink_if_identity(destination, source_identity)
             raise OSError("附件发布身份校验失败")
         return destination

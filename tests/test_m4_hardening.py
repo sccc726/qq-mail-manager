@@ -886,7 +886,7 @@ class AttachmentHardeningTests(OfflineTestCase):
             exercise("source")
             exercise("destination")
 
-    def test_temp_replacement_race_never_overwrites_or_leaks_victim(self):
+    def test_temp_replacement_race_fails_without_unlinking_foreign_inode(self):
         download = load("download_attachment.py")
         with tempfile.TemporaryDirectory() as directory:
             folder = pathlib.Path(directory)
@@ -902,7 +902,24 @@ class AttachmentHardeningTests(OfflineTestCase):
                 with self.assertRaises(OSError):
                     download._save_part(b"new", "8bit", folder, "target.txt", 10)
             self.assertEqual(victim.read_bytes(), b"do-not-touch")
-            self.assertFalse((folder / "target.txt").exists())
+            target = folder / "target.txt"
+            if target.exists():
+                self.assertTrue(os.path.samefile(target, victim))
+                real_unlink(target)
+            self.assertFalse(list(folder.glob(".qqmail-*.part")))
+
+            # Windows cannot unlink the open temporary file above, so force
+            # the same post-link foreign-identity state on every platform.
+            def publish_foreign_inode(_source, destination):
+                return real_link(victim, destination)
+            with patch.object(download.os, "link", side_effect=publish_foreign_inode):
+                with self.assertRaisesRegex(OSError, "附件发布身份校验失败"):
+                    download._save_part(b"new", "8bit", folder, "portable-target.txt", 10)
+            self.assertEqual(victim.read_bytes(), b"do-not-touch")
+            portable_target = folder / "portable-target.txt"
+            self.assertTrue(os.path.samefile(portable_target, victim))
+            real_unlink(portable_target)
+            self.assertFalse(list(folder.glob(".qqmail-*.part")))
 
     def test_attachment_disposition_without_filename_downloads_stable_fallback(self):
         download = load("download_attachment.py")

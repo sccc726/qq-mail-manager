@@ -20,7 +20,7 @@
 ## 通用命令和输出
 
 - 入口保持为 `python scripts/{list_folders,search_emails,get_email,download_attachment,mark_email,move_email,send_email}.py`；现有参数名在 U7 前不移除。
-- 所有正常、预览和业务错误路径的 stdout 必须恰好输出一个 JSON 文档；诊断只能写 stderr。
+- 所有正常、预览和业务错误路径的 stdout 必须以 UTF-8 编码恰好输出一个 JSON 文档；诊断只能写 stderr。七个真实 CLI 入口会在进程边界统一配置 UTF-8，以避免 Windows 重定向流继承非 UTF-8 代码页。
 - 顶层 `status` 只能是 `success`、`preview`、`partial` 或 `error`。`success`/`preview` 退出码为 0；`partial`、`error` 和参数错误为非零。
 - 返回的错误必须是结构化 JSON，至少包含 `status: "error"` 和非秘密的 `message`。不得把授权码、完整 MIME 或附件内容放入诊断。
 - 读取凭据仅使用 `QQ_EMAIL` 和 `QQ_EMAIL_AUTH_CODE`；缺失时在任何网络连接前返回该结构化错误。

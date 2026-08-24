@@ -115,11 +115,7 @@ class M5CliContractTests(unittest.TestCase):
 
 
 class M5IsolationTests(unittest.TestCase):
-    def test_each_milestone_module_runs_in_a_fresh_interpreter(self):
-        if os.environ.get("QQMAIL_M5_ISOLATED_CHILD") == "1":
-            return
-        modules = ("test_m0_contract", "test_m1_core", "test_m2_uid_migration",
-                   "test_m3_send", "test_m4_hardening", "test_m5_final")
+    def test_entrypoints_run_in_fresh_interpreters_with_utf8_output(self):
         # Start from the platform environment so Windows TEMP/TMP/SystemRoot
         # and PATH remain usable.  Remove Python import injection rather than
         # relying on a pre-set scripts path, then explicitly neutralize mail
@@ -128,8 +124,7 @@ class M5IsolationTests(unittest.TestCase):
         for key in tuple(environment):
             if key.startswith("PYTHON"):
                 environment.pop(key)
-        environment.update({"QQ_EMAIL": "", "QQ_EMAIL_AUTH_CODE": "", "PYTHONDONTWRITEBYTECODE": "1",
-                            "QQMAIL_M5_ISOLATED_CHILD": "1"})
+        environment.update({"QQ_EMAIL": "", "QQ_EMAIL_AUTH_CODE": "", "PYTHONDONTWRITEBYTECODE": "1"})
         self.assertNotIn("PYTHONPATH", environment)
         self.assertNotIn("PYTHONHOME", environment)
         self.assertEqual((environment["QQ_EMAIL"], environment["QQ_EMAIL_AUTH_CODE"]), ("", ""))
@@ -137,12 +132,34 @@ class M5IsolationTests(unittest.TestCase):
                                 "import os,tempfile; assert not os.environ['QQ_EMAIL']; "
                                 "assert not os.environ['QQ_EMAIL_AUTH_CODE']; "
                                 "directory=tempfile.TemporaryDirectory(); directory.cleanup()"],
-                               cwd=ROOT, text=True, capture_output=True, env=environment)
+                               cwd=ROOT, capture_output=True, env=environment, timeout=10)
         self.assertEqual(probe.returncode, 0, (probe.stdout, probe.stderr))
-        for module in modules:
-            completed = subprocess.run([sys.executable, "-B", "-m", "unittest", f"tests.{module}", "-q"],
-                                       cwd=ROOT, text=True, capture_output=True, env=environment)
-            self.assertEqual(completed.returncode, 0, (module, completed.stdout, completed.stderr))
+
+        import_probe = ("import importlib.util,pathlib,sys; path=pathlib.Path(sys.argv[1]); "
+                        "spec=importlib.util.spec_from_file_location('isolated_entrypoint',path); "
+                        "module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
+                        "assert callable(module.main)")
+        for name in ENTRYPOINTS:
+            completed = subprocess.run([sys.executable, "-I", "-B", "-c", import_probe, str(SCRIPTS / name)],
+                                       cwd=ROOT, capture_output=True, env=environment, timeout=10)
+            self.assertEqual((completed.returncode, completed.stdout, completed.stderr), (0, b"", b""), name)
+
+        legacy_environment = dict(environment)
+        legacy_environment["PYTHONIOENCODING"] = "cp1252"
+        for name in ENTRYPOINTS:
+            completed = subprocess.run([sys.executable, "-B", str(SCRIPTS / name), "--help"],
+                                       cwd=ROOT, capture_output=True, env=legacy_environment, timeout=10)
+            self.assertEqual((completed.returncode, completed.stderr), (0, b""), name)
+            self.assertIn("usage:", completed.stdout.decode("utf-8"), name)
+
+        completed = subprocess.run(
+            [sys.executable, "-B", str(SCRIPTS / "get_email.py"), "--mail_ids", "1:*",
+             "--folder", "INBOX", "--uidvalidity", "1"],
+            cwd=ROOT, capture_output=True, env=legacy_environment, timeout=10,
+        )
+        self.assertEqual((completed.returncode, completed.stderr), (1, b""))
+        document = json.loads(completed.stdout.decode("utf-8"))
+        self.assertEqual((document["status"], document["code"]), ("error", "invalid_mailref"))
 
 
 class M5StaticOwnershipTests(unittest.TestCase):

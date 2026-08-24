@@ -31,6 +31,19 @@ class StructuredArgumentParser(ArgumentParser):
         raise ArgumentParseError(message)
 
 
+def configure_cli_stdio() -> None:
+    """Make real CLI help and JSON streams UTF-8 on every supported platform."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            # Imported/test streams may not expose a reconfigurable byte layer.
+            pass
+
+
 def _checked_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
     protected = sorted(RESERVED_RESULT_FIELDS.intersection(fields))
     if protected:

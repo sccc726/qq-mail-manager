@@ -17,6 +17,9 @@ jobs:
       # CI must prove every path works without injecting mailbox credentials.
       QQ_EMAIL: ''
       QQ_EMAIL_AUTH_CODE: ''
+      # Windows runners otherwise use cp1252 for redirected Python streams.
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -35,6 +38,6 @@ jobs:
           python scripts/send_email.py --help
       - name: Invalid argument and missing credential JSON smoke
         run: >
-          python -c "import json,os,subprocess,sys; checks=[(['get_email.py','--mail_ids','1:*','--folder','INBOX','--uidvalidity','1'],'invalid_mailref'),(['get_email.py','--mail_ids','1','--folder','INBOX','--uidvalidity','1'],'missing_credentials')]; assert all((r:=subprocess.run([sys.executable,'scripts'+os.sep+args[0],*args[1:]],text=True,capture_output=True)).returncode != 0 and not r.stderr and json.loads(r.stdout)['status']=='error' and json.loads(r.stdout).get('code')==code for args,code in checks)"
+          python -c "import json,os,subprocess,sys; checks=[(['get_email.py','--mail_ids','1:*','--folder','INBOX','--uidvalidity','1'],'invalid_mailref'),(['get_email.py','--mail_ids','1','--folder','INBOX','--uidvalidity','1'],'missing_credentials')]; assert all((r:=subprocess.run([sys.executable,'scripts'+os.sep+args[0],*args[1:]],text=True,encoding='utf-8',capture_output=True,timeout=10)).returncode != 0 and not r.stderr and len(r.stdout.splitlines())==1 and json.loads(r.stdout)['status']=='error' and json.loads(r.stdout).get('code')==code for args,code in checks)"
       - name: Offline unittest suite
         run: python -m unittest discover -s tests -v
