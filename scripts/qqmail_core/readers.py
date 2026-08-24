@@ -171,12 +171,12 @@ def fetch_preview(mail, reference, part):
         raise MailRefError("正文大小无效")
     if size == 0:
         return ""
-    expected = min(size, 8192)
     status, data = mail.uid("FETCH", reference.uid, f"(UID BODY.PEEK[{section}]<0.8192>)")
-    response = select_uid_section(data, reference.uid, section, maximum=8192, expected_length=expected) if status == "OK" else None
+    response = select_uid_section(data, reference.uid, section, maximum=8192) if status == "OK" else None
     if response is None:
         raise MailRefError("UID正文片段 FETCH失败")
-    return decode_text(decode_transfer(response.raw, str(part.get("encoding") or ""), partial=size > 8192),
+    partial = len(response.raw) == 8192 and size != len(response.raw)
+    return decode_text(decode_transfer(response.raw, str(part.get("encoding") or ""), partial=partial),
                        str(part.get("charset") or "utf-8"))[:150]
 
 

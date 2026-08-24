@@ -26,7 +26,9 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from qqmail_core.mailref import MailRef
+from qqmail_core import details as detail_reader
+from qqmail_core import readers as mail_readers
+from qqmail_core.mailref import MailRef, MailRefError
 from qqmail_core.mime import bodystructure_parts, decode_header_value, decode_transfer, extract_body_and_attachments, plain_text_part
 from qqmail_core.imap_uid import (select_uid_fetch, select_uid_metadata,
                                   select_uid_section, uid_fetch_exists)
@@ -674,6 +676,191 @@ class BoundedListTests(OfflineTestCase):
         self.assertEqual(bodystructure_parts(deeply_nested), [])
         near_token_limit = b"BODYSTRUCTURE (" + b" ".join([b"NIL"] * 2_001) + b")"
         self.assertEqual(bodystructure_parts(near_token_limit), [])
+
+
+class DetailBodyLimitTests(OfflineTestCase):
+    LIMIT = 2 * 1024 * 1024
+
+    class DetailSectionIMAP(FakeIMAP):
+        """Serve one declared text section without constructing a full MIME fixture."""
+
+        def __init__(self, declared_size, body_literal, encoding="8BIT", charset="utf-8", *,
+                     response_uid=None, response_section="1", response_origin=0,
+                     marker_length=None, duplicate_body=False):
+            super().__init__({"INBOX": FakeMailbox(uidvalidity="1")})
+            self.declared_size = declared_size
+            self.body_literal = body_literal
+            self.encoding = encoding
+            self.charset = charset
+            self.response_uid = response_uid
+            self.response_section = response_section
+            self.response_origin = response_origin
+            self.marker_length = marker_length
+            self.duplicate_body = duplicate_body
+            self.body_queries = []
+
+        @staticmethod
+        def _for_uid(value, uid):
+            return value[uid] if isinstance(value, dict) else value
+
+        def uid(self, command, *args):
+            command = command.upper()
+            self.log.append(("UID", command) + args)
+            if command != "FETCH" or len(args) < 2:
+                return "NO", [b"unsupported command"]
+            uid = args[0].decode() if isinstance(args[0], bytes) else str(args[0])
+            query = args[1].decode() if isinstance(args[1], bytes) else str(args[1])
+            if "HEADER.FIELDS" in query:
+                declared_size = self._for_uid(self.declared_size, uid)
+                header = (b"Subject: bounded\r\nFrom: sender@example.test\r\n"
+                          b"To: me@example.test\r\n"
+                          b"Date: Mon, 01 Jan 2024 12:00:00 +0800\r\n\r\n")
+                structure = (
+                    f'("TEXT" "PLAIN" ("CHARSET" "{self.charset}") NIL NIL '
+                    f'"{self.encoding}" {declared_size} 1 NIL NIL NIL)'
+                )
+                section = "HEADER.FIELDS (SUBJECT FROM TO CC DATE)"
+                metadata = f"1 (UID {uid} BODYSTRUCTURE {structure} BODY[{section}]<0>)".encode()
+                return "OK", [(metadata, header)]
+            if "BODY.PEEK[1]" in query:
+                self.body_queries.append(query)
+                literal = self._for_uid(self.body_literal, uid)
+                response_uid = uid if self.response_uid is None else self._for_uid(self.response_uid, uid)
+                marker_length = len(literal) if self.marker_length is None else self._for_uid(self.marker_length, uid)
+                metadata = (f"1 (UID {response_uid} BODY[{self.response_section}]"
+                            f"<{self.response_origin}> {{{marker_length}}}").encode()
+                response = [(metadata, literal), b")"]
+                return "OK", response * (2 if self.duplicate_body else 1)
+            return "NO", [b"unsupported fetch"]
+
+    @staticmethod
+    def fetch_detail(imap):
+        return detail_reader.fetch_single_email(imap, MailRef("INBOX", "1", "9"), BytesParser())
+
+    def test_production_limit_and_query_truncate_directly_without_json(self):
+        self.assertEqual(detail_reader.MAX_BODY_BYTES, self.LIMIT)
+        imap = self.DetailSectionIMAP(self.LIMIT + 1, b"A" * self.LIMIT)
+
+        with patch("qqmail_core.connections.imaplib.IMAP4_SSL", return_value=imap):
+            result = detail_reader.get_emails("me@example.test", "token", ["9"], "INBOX", "1")
+        detail = result["emails"][0]
+
+        self.assertEqual((result["status"], result["fetched"]), ("success", 1))
+        self.assertEqual(imap.body_queries, [f"(UID BODY.PEEK[1]<0.{self.LIMIT}>)"])
+        self.assertTrue(imap.readonly)
+        self.assertTrue(imap.logged_out)
+        self.assertEqual(detail["body_bytes_fetched"], self.LIMIT)
+        self.assertTrue(detail["body_truncated"])
+        self.assertEqual(len(detail["body"]), self.LIMIT)
+        self.assertEqual((detail["body"][0], detail["body"][-1]), ("A", "A"))
+        self.assertEqual(detail["attachments"], [])
+        self.assertFalse(any("BODY.PEEK[]" in str(call) for call in imap.log))
+
+    def test_qq_bodystructure_mismatch_uses_actual_imap_literal_length(self):
+        imap = self.DetailSectionIMAP(118_219, b"A" * 118_225)
+
+        detail = self.fetch_detail(imap)
+
+        self.assertEqual(detail["body_bytes_fetched"], 118_225)
+        self.assertFalse(detail["body_truncated"])
+        self.assertEqual(len(detail["body"]), 118_225)
+        self.assertEqual(imap.body_queries, [f"(UID BODY.PEEK[1]<0.{self.LIMIT}>)"])
+
+    def test_declared_and_actual_size_matrix_with_small_patched_cap(self):
+        cases = (
+            ("zero", 0, b"", 0, False, 0),
+            ("below", 7, b"A" * 7, 7, False, 1),
+            ("equal", 8, b"A" * 8, 8, False, 1),
+            ("above", 9, b"A" * 8, 8, True, 1),
+            ("declared-short-subcap", 6, b"A" * 7, 7, False, 1),
+            ("declared-long-subcap", 9, b"A" * 7, 7, False, 1),
+            ("declared-short-at-cap", 7, b"A" * 8, 8, True, 1),
+            ("positive-declared-empty", 5, b"", 0, False, 1),
+        )
+        with patch.object(detail_reader, "MAX_BODY_BYTES", 8):
+            for name, declared_size, literal, fetched, truncated, query_count in cases:
+                with self.subTest(name=name):
+                    imap = self.DetailSectionIMAP(declared_size, literal)
+                    detail = self.fetch_detail(imap)
+                    self.assertEqual(detail["body_bytes_fetched"], fetched)
+                    self.assertIs(detail["body_truncated"], truncated)
+                    self.assertEqual(len(detail["body"]), fetched)
+                    self.assertEqual(len(imap.body_queries), query_count)
+                    if query_count:
+                        self.assertEqual(imap.body_queries[0], "(UID BODY.PEEK[1]<0.8>)")
+
+    def test_oversized_or_misbound_literals_still_fail_closed(self):
+        with patch.object(detail_reader, "MAX_BODY_BYTES", 8):
+            cases = (
+                ("oversized", self.DetailSectionIMAP(7, b"A" * 9)),
+                ("wrong-uid", self.DetailSectionIMAP(8, b"A" * 8, response_uid="10")),
+                ("wrong-section", self.DetailSectionIMAP(8, b"A" * 8, response_section="2")),
+                ("wrong-origin", self.DetailSectionIMAP(8, b"A" * 8, response_origin=1)),
+                ("wrong-marker", self.DetailSectionIMAP(8, b"A" * 8, marker_length=7)),
+                ("duplicate", self.DetailSectionIMAP(8, b"A" * 8, duplicate_body=True)),
+            )
+            for name, imap in cases:
+                with self.subTest(name=name):
+                    with self.assertRaisesRegex(MailRefError, "正文 section FETCH失败"):
+                        self.fetch_detail(imap)
+                    self.assertEqual(imap.body_queries, ["(UID BODY.PEEK[1]<0.8>)"])
+
+    def test_batch_reports_partial_when_one_mismatch_succeeds_and_one_literal_is_oversized(self):
+        imap = self.DetailSectionIMAP({"9": 7, "10": 7}, {"9": b"A" * 8, "10": b"B" * 9})
+        with patch.object(detail_reader, "MAX_BODY_BYTES", 8), \
+                patch("qqmail_core.connections.imaplib.IMAP4_SSL", return_value=imap):
+            result = detail_reader.get_emails("me@example.test", "token", ["9", "10"], "INBOX", "1")
+
+        self.assertEqual((result["status"], result["fetched"]), ("partial", 1))
+        self.assertEqual(result["emails"][0]["body_bytes_fetched"], 8)
+        self.assertTrue(result["emails"][0]["body_truncated"])
+        self.assertEqual(len(result["failed"]), 1)
+        self.assertEqual(result["failed"][0]["message"], "正文 section FETCH失败")
+
+    def test_truncated_transfer_and_charset_decoding_use_wire_byte_limit(self):
+        cases = (
+            ("base64", 9, b"\nQUFBQUF", "BASE64", "AAA"),
+            ("quoted-printable", 10, b"AAAAAAA=", "QUOTED-PRINTABLE", "AAAAAAA"),
+            ("utf-8", 10, b"A" * 7 + b"\xe4", "8BIT", "AAAAAAA\ufffd"),
+        )
+        with patch.object(detail_reader, "MAX_BODY_BYTES", 8):
+            for name, declared_size, literal, encoding, expected_body in cases:
+                with self.subTest(name=name):
+                    imap = self.DetailSectionIMAP(declared_size, literal, encoding=encoding)
+                    detail = self.fetch_detail(imap)
+                    self.assertEqual(detail["body"], expected_body)
+                    self.assertEqual(detail["body_bytes_fetched"], 8)
+                    self.assertTrue(detail["body_truncated"])
+                    self.assertEqual(imap.body_queries, ["(UID BODY.PEEK[1]<0.8>)"])
+
+    def test_search_preview_tolerates_bidirectional_subcap_size_mismatch(self):
+        reference = MailRef("INBOX", "1", "9")
+        cases = (("declared-short", 6), ("declared-long", 9))
+        for name, declared_size in cases:
+            with self.subTest(name=name):
+                imap = self.DetailSectionIMAP(declared_size, b"A" * 7)
+                part = {"section": "1", "size": declared_size, "encoding": "8BIT", "charset": "utf-8"}
+
+                preview = mail_readers.fetch_preview(imap, reference, part)
+
+                self.assertEqual(preview, "A" * 7)
+                self.assertEqual(imap.body_queries, ["(UID BODY.PEEK[1]<0.8192>)"])
+
+    def test_search_preview_uses_declared_mismatch_only_when_literal_hits_cap(self):
+        reference = MailRef("INBOX", "1", "9")
+        partial_literal = b"A" * 8191 + b"="
+        for declared_size in (8191, 8193):
+            with self.subTest(declared_size=declared_size):
+                imap = self.DetailSectionIMAP(declared_size, partial_literal, encoding="QUOTED-PRINTABLE")
+                part = {"section": "1", "size": declared_size,
+                        "encoding": "QUOTED-PRINTABLE", "charset": "utf-8"}
+                self.assertEqual(mail_readers.fetch_preview(imap, reference, part), "A" * 150)
+
+        imap = self.DetailSectionIMAP(8192, partial_literal, encoding="QUOTED-PRINTABLE")
+        exact_part = {"section": "1", "size": 8192,
+                      "encoding": "QUOTED-PRINTABLE", "charset": "utf-8"}
+        with self.assertRaisesRegex(ValueError, "quoted-printable正文编码无效或截断"):
+            mail_readers.fetch_preview(imap, reference, exact_part)
 
 
 class AttachmentHardeningTests(OfflineTestCase):

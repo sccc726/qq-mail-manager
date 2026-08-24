@@ -260,6 +260,33 @@ class M5IsolationTests(unittest.TestCase):
 
 
 class M5StaticOwnershipTests(unittest.TestCase):
+    def test_skill_mail_table_hides_mailref_and_uses_display_folder(self):
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        header = next(line for line in skill.splitlines() if line.startswith("| folder |"))
+        self.assertEqual(header, "| folder | 主题 | 发件人 | 日期 | 概括 |")
+        for hidden in ("uidvalidity", "mail_id", " UID ", "序号"):
+            self.assertNotIn(hidden, header)
+
+        self.assertIn("不得向用户显示 `uidvalidity`、`mail_id` 或 UID", skill)
+        self.assertIn("`name → display`", skill)
+        self.assertIn("所有工具调用仍使用原始 `name`", skill)
+        self.assertIn("（文件夹名称不可用）", skill)
+        self.assertIn("搜索使用已有 `preview`，详情使用已有 `body`", skill)
+        self.assertIn("HTML 片段先转为可见文本", skill)
+        self.assertIn("折叠换行、制表符和连续空白", skill)
+        self.assertIn("转义 Markdown 表格中的 `|`，然后取前 30 个 Unicode 字符", skill)
+        self.assertIn("前 30 个 Unicode 字符", skill)
+        self.assertIn("不追加省略号", skill)
+        self.assertIn("（无正文概括）", skill)
+        self.assertIn("不得仅为填充概括额外调用搜索或详情", skill)
+
+        confirmation = next(
+            line for line in skill.splitlines() if line.startswith("- **确认操作**")
+        )
+        self.assertIn("完整 MailRef", confirmation)
+        self.assertIn("`confirmation`", confirmation)
+        self.assertIn("用户表格不得显示", confirmation)
+
     def test_entrypoints_are_thin_and_do_not_own_protocol_or_mime_work(self):
         forbidden = {"imaplib", "smtplib", "ssl", "email", "os"}
         for name in ENTRYPOINTS:

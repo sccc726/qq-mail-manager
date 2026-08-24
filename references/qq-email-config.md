@@ -3,7 +3,10 @@
 ## 目录
 - [开启IMAP/SMTP服务](#开启imapsmtp服务)
 - [获取授权码](#获取授权码)
+- [本机 Codex 凭据储存](#本机-codex-凭据储存)
+- [服务器配置信息](#服务器配置信息)
 - [常见问题](#常见问题)
+- [离线开发安全](#离线开发安全)
 
 ## 开启IMAP/SMTP服务
 
@@ -32,12 +35,84 @@ QQ邮箱不支持直接使用QQ密码登录第三方邮件客户端，需要使�
 2. 点击「生成授权码」按钮
 3. 通过手机短信验证
 4. 系统会生成一个16位的授权码，格式类似：`abcdabcdabcdabcd`
-5. **妥善保存此授权码**，它是访问邮箱的唯一凭证
+5. 按[本机 Codex 凭据储存](#本机-codex-凭据储存)一节保存授权码；不要把真实值写入仓库、脚本参数或普通配置文件
 
 ### 注意事项
 - 授权码可以随时在设置中重新生成
 - 每个邮箱账户可以生成多个授权码
 - 建议定期更换授权码以保护账户安全
+
+## 本机 Codex 凭据储存
+
+### 当前推荐
+
+在本项目当前的使用边界——仅邮箱所有者、仅本机 Windows、仅通过 Codex 交互使用——推荐把以下两项持久保存为 **Windows 当前用户（`User`）范围的环境变量**：
+
+- `QQ_EMAIL`：完整邮箱地址
+- `QQ_EMAIL_AUTH_CODE`：QQ 邮箱 IMAP/SMTP 授权码，不是 QQ 登录密码
+
+项目的 `scripts/qqmail_core/config.py` 只从当前进程环境读取这两个变量，不会自行把凭据写入文件、数据库或日志。[Codex 官方文档](https://learn.chatgpt.com/docs/config-file/environment-variables)也将环境变量用于 shell 范围覆盖和自动化凭据。选择当前用户范围可以让 Codex 重启后继续使用，同时避免把授权码写入项目仓库或 `~/.codex/config.toml`。
+
+不要把授权码配置在 `config.toml` 的 `shell_environment_policy.set` 中；该字段适合显式注入普通环境值，但会让授权码以明文出现在常规配置文件中。不要在项目中创建 `.env` 保存真实凭据：当前代码不会加载它，而且它仍是明文副本。也不要使用 Windows `Machine` 范围，因为这会扩大到本机其他用户和服务。
+
+> **安全边界：** Windows 通常把 `User` 环境变量持久保存在当前用户注册表 `HKEY_CURRENT_USER\Environment`；它不是加密凭据库。同一 Windows 用户身份下运行的其他进程可以读取这些值，管理员也可能访问。该方案只适用于本项目当前的单用户、本机边界。若改为多用户、共享主机、远程服务、高权限进程或高敏感邮箱，应改用操作系统或托管凭据库，并在启动邮箱脚本时按进程注入；当前项目尚未实现这种凭据提供器。
+
+### Windows 配置
+
+在 PowerShell 7 中执行。授权码使用遮罩输入，避免直接出现在命令历史中：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+    "QQ_EMAIL",
+    "your-address@qq.com",
+    [System.EnvironmentVariableTarget]::User
+)
+
+$qqAuthCode = Read-Host "请输入 QQ 邮箱授权码" -MaskInput
+try {
+    [Environment]::SetEnvironmentVariable(
+        "QQ_EMAIL_AUTH_CODE",
+        $qqAuthCode,
+        [System.EnvironmentVariableTarget]::User
+    )
+} finally {
+    Remove-Variable qqAuthCode -ErrorAction SilentlyContinue
+}
+```
+
+设置后完全退出并重新启动 Codex，使新进程继承变量。不要把真实邮箱或授权码替换进文档、脚本、测试、CI、截图或提交记录。
+
+### 无泄露验证
+
+以下命令只显示邮箱地址及授权码是否存在，不输出授权码本身：
+
+```powershell
+[pscustomobject]@{
+    QQ_EMAIL = [Environment]::GetEnvironmentVariable(
+        "QQ_EMAIL", [System.EnvironmentVariableTarget]::User
+    )
+    QQ_EMAIL_AUTH_CODE_CONFIGURED = -not [string]::IsNullOrWhiteSpace(
+        [Environment]::GetEnvironmentVariable(
+            "QQ_EMAIL_AUTH_CODE", [System.EnvironmentVariableTarget]::User
+        )
+    )
+}
+```
+
+### 轮换与删除
+
+轮换时先在 QQ 邮箱生成新授权码，用上面的遮罩输入命令覆盖 `QQ_EMAIL_AUTH_CODE`，重启 Codex 并验证认证成功后，再在 QQ 邮箱设置中撤销旧授权码。
+
+不再使用技能时，删除当前用户范围的两项配置并重启 Codex：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+    "QQ_EMAIL", $null, [System.EnvironmentVariableTarget]::User
+)
+[Environment]::SetEnvironmentVariable(
+    "QQ_EMAIL_AUTH_CODE", $null, [System.EnvironmentVariableTarget]::User
+)
+```
 
 ## 服务器配置信息
 
@@ -84,21 +159,6 @@ A: QQ邮箱常见的邮件夹名称：
 
 ### Q: 授权码忘记了怎么办？
 A: 登录QQ邮箱网页版 → 设置 → 账户 → POP3/IMAP/SMTP服务 → 点击「更改授权码」→ 重新获取新的授权码。
-
-## 首次使用凭证配置引导
-
-当用户首次使用邮箱功能时，按以下步骤引导：
-
-1. 告知用户需要提供QQ邮箱地址和授权码（非QQ登录密码）
-2. 引导用户获取授权码：登录QQ邮箱网页版 → 设置 → 账户 → POP3/IMAP/SMTP/Exchange/CardDAV/CalDAV服务 → 开启IMAP/SMTP服务 → 生成授权码
-3. 弹出凭证填写弹窗后，用户填入邮箱地址和授权码即可，后续使用自动注入
-4. 若用户提示"授权码错误"或"登录失败"，引导用户重新生成授权码并更新凭证
-
-OpenClaw 凭证环境变量：
-- `QQ_EMAIL`（邮箱地址）
-- `QQ_EMAIL_AUTH_CODE`（QQ邮箱授权码）
-
-OpenClaw 可根据 skill metadata 提示配置上述变量；本地手动运行时，请先在 shell 中设置 `QQ_EMAIL` 和 `QQ_EMAIL_AUTH_CODE`。
 
 ## 离线开发安全
 

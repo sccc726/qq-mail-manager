@@ -15,7 +15,7 @@ from .results import (ArgumentParseError, StructuredArgumentParser,
                                  error_result)
 
 
-MAX_BODY_BYTES = 64 * 1024
+MAX_BODY_BYTES = 2 * 1024 * 1024
 
 
 def fetch_single_email(mail, reference: MailRef, parser: BytesParser):
@@ -41,14 +41,13 @@ def fetch_single_email(mail, reference: MailRef, parser: BytesParser):
         if size == 0:
             text_parts = []
         else:
-            expected = min(size, MAX_BODY_BYTES)
             body_status, body_data = mail.uid("FETCH", reference.uid, f"(UID BODY.PEEK[{section}]<0.{MAX_BODY_BYTES}>)")
-            body_response = select_uid_section(body_data, reference.uid, section, maximum=MAX_BODY_BYTES,
-                                                expected_length=expected) if body_status == "OK" else None
+            body_response = (select_uid_section(body_data, reference.uid, section, maximum=MAX_BODY_BYTES)
+                             if body_status == "OK" else None)
             if body_response is None:
                 raise MailRefError("正文 section FETCH失败")
             body_bytes_fetched = len(body_response.raw)
-            body_truncated = size > body_bytes_fetched
+            body_truncated = body_bytes_fetched == MAX_BODY_BYTES and size != body_bytes_fetched
             body = decode_text(decode_transfer(body_response.raw, str(text_parts[0].get("encoding") or ""), partial=body_truncated),
                                str(text_parts[0].get("charset") or "utf-8"))
     attachments = [{"name": decode_header_value(part["filename"]) or f"attachment-{part['section']}", "type": part["type"]}

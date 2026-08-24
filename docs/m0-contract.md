@@ -39,7 +39,8 @@
 - Bcc 只存在于预览清单和 SMTP 信封，绝不写入 MIME 头。SMTP 拒收映射为 `success`、`partial` 或 `error`；传输在 `sendmail` 后异常时会标记 `delivery_indeterminate`，不会声称邮件未发送。
 - `send_email.py --test` 只连接、执行 TLS 和认证后关闭；它返回 `sent:false`，不构建 MIME、不读取附件/正文文件、不读取 IMAP，且不能和任何发送、回复或确认参数组合。
 
-- `get_email.py` 的 `body` 保留原字段名但有 64KiB 安全上限；同时返回 `body_truncated` 和 `body_bytes_fetched`，不得把截断正文表述为完整正文。
+- `get_email.py` 的 `body` 保留原字段名；每封邮件所选正文 MIME section 的传输态安全上限为 2 MiB（2,097,152 字节）。通过 UID、section 和上限校验后，以 FETCH literal 的实际长度为准，BODYSTRUCTURE 的声明长度不构成跨响应等长条件；literal 触及上限且声明长度不能确认完整时 `body_truncated=true`。同时返回解码前实际取回字节数 `body_bytes_fetched`，不得把截断正文表述为完整正文。
+- `search_emails.py` 的 `preview` 对所选正文 MIME section 使用 8 KiB 传输态上限，并采用相同的有界 FETCH literal 实际长度语义；长度声明偏差不得单独导致该页邮件失败。
 
 ## M4 本机目录与资源策略
 
