@@ -29,14 +29,30 @@ def parse_date_arg(value):
 
 
 def parse_recent_arg(value, *, now=None):
-    match = re.fullmatch(r"(\d+)([mhdw])", value.strip().lower())
-    if not match or int(match.group(1)) <= 0:
-        raise ValueError("无法解析相对时间: 支持 30m、2h、7d、1w")
-    amount, unit = int(match.group(1)), match.group(2)
-    delta = {"m": timedelta(minutes=amount), "h": timedelta(hours=amount),
-             "d": timedelta(days=amount), "w": timedelta(weeks=amount)}[unit]
-    cutoff = (now or datetime.now(UTC8)) - delta
-    return (cutoff - timedelta(days=1)).strftime("%d-%b-%Y"), cutoff
+    message = "无法解析相对时间: 支持 30m、2h、7d、1w"
+    try:
+        if not isinstance(value, str):
+            raise ValueError(message)
+        match = re.fullmatch(r"(\d+)([mhdw])", value.strip().lower())
+        if not match:
+            raise ValueError(message)
+        amount, unit = int(match.group(1)), match.group(2)
+        if amount <= 0:
+            raise ValueError(message)
+        delta = {"m": timedelta(minutes=amount), "h": timedelta(hours=amount),
+                 "d": timedelta(days=amount), "w": timedelta(weeks=amount)}[unit]
+        cutoff = (now or datetime.now(UTC8)) - delta
+        return (cutoff - timedelta(days=1)).strftime("%d-%b-%Y"), cutoff
+    except (ValueError, OverflowError) as exc:
+        raise ValueError(message) from exc
+
+
+def _validate_search_options(recent, limit, offset, *, now=None):
+    if offset < 0 or (limit is not None and limit < 0):
+        raise ValueError("limit 和 offset 不能为负数")
+    if recent is None:
+        return None, None
+    return parse_recent_arg(recent, now=now)
 
 
 def _imap_date_datetime(value):
@@ -168,11 +184,8 @@ def query_emails(email_addr, auth_code, query=None, from_addr=None, subject=None
                  folder="INBOX", all_folders=False, since=None, before=None,
                  recent=None, seen=None, limit=None, offset=0, now=None):
     try:
-        if offset < 0 or (limit is not None and limit < 0):
-            raise ValueError("limit 和 offset 不能为负数")
-        recent_cutoff = None
-        if recent:
-            recent_since, recent_cutoff = parse_recent_arg(recent, now=now)
+        recent_since, recent_cutoff = _validate_search_options(recent, limit, offset, now=now)
+        if recent_cutoff is not None:
             if since:
                 since = max(_imap_date_datetime(since), _imap_date_datetime(recent_since)).strftime("%d-%b-%Y")
             else:
@@ -263,6 +276,7 @@ def main():
         args = parser.parse_args()
         since = parse_date_arg(args.since) if args.since else None
         before = parse_date_arg(args.before) if args.before else None
+        _validate_search_options(args.recent, args.limit, args.offset)
         # Reject injected folder/query data before credentials are read.
         quote_mailbox(args.folder)
         build_search_criteria(args.query, args.from_addr, args.subject, since, before,

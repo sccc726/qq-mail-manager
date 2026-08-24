@@ -10,6 +10,7 @@ import pathlib
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
+from email.parser import BytesParser
 from unittest.mock import patch
 
 from tests.support import BlockNetwork, FakeIMAP, FakeMailbox, FakeMessage, sample_message
@@ -132,6 +133,48 @@ class UidReadAndSearchTests(OfflineTestCase):
             result = search.query_emails("me@example.test", "token")
         self.assertEqual(result["status"], "partial")
         self.assertEqual(result["failed"][0]["mail_id"], "2")
+
+    def test_uid_search_and_all_folder_list_failures_are_not_empty_success(self):
+        search = load("search_emails.py")
+        search_failure = FakeIMAP({
+            "INBOX": FakeMailbox(uidvalidity="1", messages=[FakeMessage("9", sample_message())]),
+        }, failures={"uid_search": True})
+        with patch("qqmail_core.connections.imaplib.IMAP4_SSL", return_value=search_failure):
+            failed_search = search.query_emails("me@example.test", "token")
+        self.assertEqual((failed_search["status"], failed_search["code"]),
+                         ("error", "imap_search_failed"))
+        self.assertEqual(failed_search["emails"], [])
+        self.assertTrue(any(call[:2] == ("UID", "SEARCH") for call in search_failure.log))
+
+        list_failure = FakeIMAP({"INBOX": FakeMailbox()}, failures={"list": True})
+        with patch("qqmail_core.connections.imaplib.IMAP4_SSL", return_value=list_failure):
+            failed_list = search.query_emails("me@example.test", "token", all_folders=True)
+        self.assertEqual((failed_list["status"], failed_list["code"]),
+                         ("error", "invalid_search"))
+        self.assertFalse(failed_list.get("emails"))
+        self.assertIn(("LIST",), list_failure.log)
+
+    def test_sorting_uses_internaldate_when_date_header_is_missing_or_invalid(self):
+        search = load("search_emails.py")
+
+        def message_with_date(subject, date):
+            message = BytesParser().parsebytes(sample_message(subject=subject))
+            del message["Date"]
+            if date is not None:
+                message["Date"] = date
+            return message.as_bytes()
+
+        imap = FakeIMAP({"INBOX": FakeMailbox(uidvalidity="1", messages=[
+            FakeMessage("1", message_with_date("missing", None),
+                        internaldate="01-Jan-2024 10:00:00 +0000"),
+            FakeMessage("2", message_with_date("invalid", "not-a-date"),
+                        internaldate="02-Jan-2024 10:00:00 +0000"),
+        ])})
+        with patch("qqmail_core.connections.imaplib.IMAP4_SSL", return_value=imap):
+            result = search.query_emails("me@example.test", "token")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual([(item["mail_id"], item["date"]) for item in result["emails"]],
+                         [("2", "not-a-date"), ("1", "")])
 
     def test_query_controls_and_mailref_validation_happen_before_credentials_or_network(self):
         search, mark = load("search_emails.py"), load("mark_email.py")

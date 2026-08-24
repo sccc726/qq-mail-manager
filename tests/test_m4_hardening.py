@@ -748,6 +748,21 @@ class AttachmentHardeningTests(OfflineTestCase):
         download = load("download_attachment.py")
         with tempfile.TemporaryDirectory() as directory:
             folder = pathlib.Path(directory)
+            for winerror in (1, 50):
+                unsupported = OSError(errno.EINVAL, "Windows hardlink unsupported")
+                unsupported.winerror = winerror
+                with self.subTest(winerror=winerror), \
+                        patch.object(download.os, "link", side_effect=unsupported):
+                    published, size, warning = download._save_part(
+                        b"windows", "8bit", folder, f"winerror-{winerror}.txt", 10)
+                self.assertEqual((published.read_bytes(), size, warning), (b"windows", 7, None))
+
+            with patch.object(download.os, "link", side_effect=OSError(errno.EINVAL, "invalid")):
+                with self.assertRaisesRegex(OSError, "无法安全提交附件文件"):
+                    download._save_part(b"invalid", "8bit", folder, "plain-einval.txt", 10)
+            self.assertFalse((folder / "plain-einval.txt").exists())
+            self.assertFalse(list(folder.glob(".qqmail-*.part")))
+
             with patch.object(download.os, "link", side_effect=OSError(errno.EOPNOTSUPP, "unsupported")):
                 result = download._save_part(b"data", "8bit", folder, "same.txt", 10)
             self.assertEqual(result[0].read_bytes(), b"data")

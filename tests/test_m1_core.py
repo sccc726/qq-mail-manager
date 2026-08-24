@@ -144,6 +144,31 @@ class FolderModelTests(OfflineTestCase):
             parse_list_response('(\\HasNoChildren) "/" "Trash"'), folder,
         ]), folder)
 
+        root_trash = parse_list_response('(\\HasNoChildren) "/" "Trash"')
+        qq_trash = parse_list_response('(\\HasNoChildren) "." "INBOX.Trash"')
+        chinese_trash = parse_list_response(
+            f'(\\HasNoChildren) "/" "INBOX/{encode_modified_utf7("已删除邮件")}"')
+        custom_delimiter_trash = parse_list_response(
+            '(\\HasNoChildren) ">" "INBOX>Deleted Items"')
+        for fallback in (root_trash, qq_trash, chinese_trash, custom_delimiter_trash):
+            with self.subTest(fallback=fallback.wire_name):
+                self.assertIs(choose_trash_folder([fallback]), fallback)
+
+        false_positives = [
+            parse_list_response('(\\HasNoChildren) "." "INBOX.NotTrash"'),
+            parse_list_response('(\\HasNoChildren) "." "INBOX.Trash Archive"'),
+            parse_list_response('(\\HasNoChildren) "." "Trash.Archive"'),
+            parse_list_response('(\\HasNoChildren) "." "Projects.Trash"'),
+            parse_list_response('(\\HasNoChildren) "." "INBOX.Archive.Trash"'),
+            parse_list_response('(\\HasNoChildren) ">" "Mailbox>Deleted Items"'),
+        ]
+        self.assertIsNone(choose_trash_folder(false_positives))
+        self.assertIsNone(choose_trash_folder([root_trash, qq_trash]))
+        self.assertIsNone(choose_trash_folder([custom_delimiter_trash, qq_trash]))
+        self.assertIs(choose_trash_folder([
+            custom_delimiter_trash, folder,
+        ]), folder)
+
     def test_folder_controls_and_malformed_list_are_rejected(self):
         with self.assertRaises(FolderError):
             quote_mailbox("INBOX\r\nNOOP")

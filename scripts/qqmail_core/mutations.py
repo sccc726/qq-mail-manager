@@ -2,6 +2,7 @@
 """Preview and safely move/delete messages by UID."""
 from __future__ import annotations
 
+import re
 from email.parser import BytesParser
 from .config import CredentialError, Credentials, load_credentials
 from .cli import parse_mailref_csv
@@ -12,8 +13,19 @@ from .folders import FolderError, choose_trash_folder, parse_list_response, quot
 from .mailref import MailRef, MailRefError, select_verified_mailref
 from .mime import decode_header_value
 from .results import (ArgumentParseError, StructuredArgumentParser,
-                                 argument_error_result, batch_result, emit_json,
-                                 error_result)
+                                  argument_error_result, batch_result, emit_json,
+                                  error_result)
+
+
+_CONFIRMATION = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _validate_confirmation_pair(confirm, confirmation) -> None:
+    if confirm != (confirmation is not None):
+        raise MailRefError("--confirm 必须与 --confirmation 同时提供")
+    if confirmation is not None and (
+            not isinstance(confirmation, str) or not _CONFIRMATION.fullmatch(confirmation)):
+        raise MailRefError("--confirmation 必须是 64 位小写十六进制摘要")
 
 
 def _trash_folder(mail):
@@ -99,8 +111,7 @@ def move_emails(email_addr, auth_code, mail_ids, src_folder="INBOX", dst_folder=
         references = list({ref.uid: ref for ref in (MailRef(src_folder, uidvalidity, value) for value in mail_ids)}.values())
         if not references:
             raise MailRefError("邮件编号不能为空")
-        if confirm and not confirmation:
-            raise MailRefError("--confirm 必须同时提供 --confirmation")
+        _validate_confirmation_pair(confirm, confirmation)
         if delete and dst_folder:
             raise MailRefError("--delete 与 --dst_folder 不能同时使用")
         if delete and not dst_folder:
@@ -172,10 +183,11 @@ def main():
             raise MailRefError("--delete 与 --dst_folder 不能同时使用")
         if not args.delete and not args.dst_folder:
             raise MailRefError("请指定 --dst_folder 或 --delete")
-        if args.confirm and not args.confirmation:
-            raise MailRefError("--confirm 必须同时提供 --confirmation")
+        _validate_confirmation_pair(args.confirm, args.confirmation)
         if args.dst_folder:
             quote_mailbox(args.dst_folder)
+            if args.dst_folder == args.src_folder:
+                raise MailRefError("源文件夹和目标文件夹不能相同")
     except ArgumentParseError as exc:
         return emit_json(argument_error_result(str(exc)))
     except (MailRefError, FolderError) as exc:

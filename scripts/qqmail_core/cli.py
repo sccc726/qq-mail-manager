@@ -12,7 +12,9 @@ def parse_mailref_csv(folder: str, uidvalidity: str, values: str) -> list[MailRe
     """Parse the public ``--mail_ids`` CSV into validated UID references."""
     if not isinstance(values, str):
         raise MailRefError("邮件编号不能为空")
-    items = [item.strip() for item in values.split(",") if item.strip()]
-    if not items:
-        raise MailRefError("邮件编号不能为空")
+    if any(ord(character) < 32 or ord(character) == 127 for character in values):
+        raise MailRefError("邮件编号不能包含控制字符")
+    items = [item.strip() for item in values.split(",")]
+    if not items or any(not item for item in items):
+        raise MailRefError("邮件编号列表不能包含空项")
     return [MailRef(folder, uidvalidity, item) for item in items]

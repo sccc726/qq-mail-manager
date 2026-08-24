@@ -220,7 +220,7 @@
 
 - [x] 七个入口保持 F1 的参数、JSON、状态、退出码及确认契约，同时仅作为公共实现的兼容 CLI 启动层。
 - [x] 所有静态参数、MailRef CSV、发送文件和下载路径错误均在凭据读取或连接前返回单个 JSON 错误。
-- [x] 最终离线门禁通过：完整 `unittest`（132 项）、`compileall`、七个 `--help`、无凭据 JSON smoke、AST/静态审计和 `git diff --check`；未使用真实凭据、邮箱或网络。
+- [x] 最终离线门禁通过：完整 `unittest`（135 项）、`compileall`、七个 `--help`、无凭据 JSON smoke、AST/静态审计和 `git diff --check`；未使用真实凭据、邮箱或网络。
 
 ## 可并行工作提示
 

@@ -195,6 +195,12 @@ def _same_identity(first, second) -> bool:
     return (first.st_dev, first.st_ino) == (second.st_dev, second.st_ino)
 
 
+def _hardlink_unavailable(error: OSError) -> bool:
+    """Recognize portable unsupported errors and exact Windows API mappings."""
+    portable = {errno.EPERM, errno.EOPNOTSUPP, getattr(errno, "ENOTSUP", errno.EOPNOTSUPP)}
+    return error.errno in portable or getattr(error, "winerror", None) in {1, 50}
+
+
 def _unlink_if_identity(path: pathlib.Path, expected) -> None:
     """Remove only the file created by this operation, never a raced-in path."""
     try:
@@ -229,7 +235,7 @@ def _commit_without_overwrite(temporary: pathlib.Path, directory: pathlib.Path, 
         except OSError as exc:
             if exc.errno == errno.EEXIST:
                 continue
-            if exc.errno not in {errno.EPERM, errno.EOPNOTSUPP, getattr(errno, "ENOTSUP", errno.EOPNOTSUPP)}:
+            if not _hardlink_unavailable(exc):
                 raise OSError("无法安全提交附件文件") from exc
             # FAT/SMB can lack hard links.  Reserve a destination exclusively;
             # this remains no-overwrite but is visibly non-atomic while copied.

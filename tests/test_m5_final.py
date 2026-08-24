@@ -9,6 +9,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -25,8 +26,10 @@ from tests.support import FakeIMAP, FakeMailbox, FakeMessage, sample_message
 class M5CliContractTests(unittest.TestCase):
     def test_shared_mailref_csv_rejects_invalid_values_without_credentials(self):
         self.assertEqual([item.uid for item in parse_mailref_csv("INBOX", "7", " 2,3 ")], ["2", "3"])
-        with self.assertRaises(MailRefError):
-            parse_mailref_csv("INBOX", "7", "1:*")
+        for invalid in ("1:*", "", " ", ",1", "1,", "1,,2", "1, ,2",
+                        "\t1,2", "1,2\n", "1,\r2", "1,2\x7f"):
+            with self.subTest(invalid=invalid), self.assertRaises(MailRefError):
+                parse_mailref_csv("INBOX", "7", invalid)
 
     def test_all_cli_static_errors_are_single_json_before_credentials_or_network(self):
         invocations = {
@@ -48,6 +51,19 @@ class M5CliContractTests(unittest.TestCase):
             self.assertEqual(stderr.getvalue(), "", name)
             self.assertEqual(len(stdout.getvalue().splitlines()), 1, name)
             self.assertEqual(json.loads(stdout.getvalue())["status"], "error", name)
+
+        move = load_script("move_email.py")
+        invalid_confirmation_pairs = (
+            (True, None), (False, "0" * 64), (True, ""), (True, "wrong"),
+            (True, "0" * 63), (True, "0" * 65), (True, "A" * 64),
+        )
+        for confirm, confirmation in invalid_confirmation_pairs:
+            with self.subTest(api_confirm=confirm, api_confirmation=confirmation), BlockNetwork():
+                result = move.move_emails("", "", ["1"], "INBOX", "Archive",
+                                          confirm=confirm, uidvalidity="1",
+                                          confirmation=confirmation)
+            self.assertEqual((result["status"], result["code"]),
+                             ("error", "invalid_mailref"))
 
     def test_all_cli_missing_credentials_are_rc1_single_json_under_network_block(self):
         invocations = {
@@ -115,6 +131,87 @@ class M5CliContractTests(unittest.TestCase):
 
 
 class M5IsolationTests(unittest.TestCase):
+    def test_real_entrypoints_reject_static_options_before_credentials_or_network(self):
+        cases = (
+            ("get_email.py", ["--mail_ids", "1,,2", "--folder", "INBOX", "--uidvalidity", "1"],
+             "invalid_mailref"),
+            ("download_attachment.py", ["--mail_ids", ",1", "--folder", "INBOX", "--uidvalidity", "1"],
+             "invalid_mailref"),
+            ("mark_email.py", ["--mail_ids", "1,\t2", "--action", "read", "--folder", "INBOX",
+                               "--uidvalidity", "1"], "invalid_mailref"),
+            ("move_email.py", ["--mail_ids", "1,", "--src_folder", "INBOX", "--uidvalidity", "1",
+                               "--dst_folder", "Archive"], "invalid_mailref"),
+            ("search_emails.py", ["--recent", "invalid"], "invalid_search"),
+            ("search_emails.py", ["--recent", "999999999d"], "invalid_search"),
+            ("search_emails.py", ["--recent", "9" * 5000 + "d"], "invalid_search"),
+            ("search_emails.py", ["--limit", "-1"], "invalid_search"),
+            ("search_emails.py", ["--offset", "-1"], "invalid_search"),
+            ("move_email.py", ["--mail_ids", "1", "--src_folder", "INBOX", "--uidvalidity", "1",
+                               "--dst_folder", "INBOX"], "invalid_mailref"),
+            ("move_email.py", ["--mail_ids", "1", "--src_folder", "INBOX", "--uidvalidity", "1",
+                               "--dst_folder", "Archive", "--confirmation", "0" * 64], "invalid_mailref"),
+            ("move_email.py", ["--mail_ids", "1", "--src_folder", "INBOX", "--uidvalidity", "1",
+                               "--dst_folder", "Archive", "--confirm"], "invalid_mailref"),
+            ("move_email.py", ["--mail_ids", "1", "--src_folder", "INBOX", "--uidvalidity", "1",
+                               "--dst_folder", "Archive", "--confirm", "--confirmation", ""],
+             "invalid_mailref"),
+            ("move_email.py", ["--mail_ids", "1", "--src_folder", "INBOX", "--uidvalidity", "1",
+                               "--dst_folder", "Archive", "--confirm", "--confirmation", "wrong"],
+             "invalid_mailref"),
+            ("move_email.py", ["--mail_ids", "1", "--src_folder", "INBOX", "--uidvalidity", "1",
+                               "--dst_folder", "Archive", "--confirm", "--confirmation", "0" * 63],
+             "invalid_mailref"),
+            ("move_email.py", ["--mail_ids", "1", "--src_folder", "INBOX", "--uidvalidity", "1",
+                               "--dst_folder", "Archive", "--confirm", "--confirmation", "0" * 65],
+             "invalid_mailref"),
+            ("move_email.py", ["--mail_ids", "1", "--src_folder", "INBOX", "--uidvalidity", "1",
+                               "--dst_folder", "Archive", "--confirm", "--confirmation", "A" * 64],
+             "invalid_mailref"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            guard_dir = pathlib.Path(directory)
+            loaded = guard_dir / "loaded"
+            attempted = guard_dir / "attempted"
+            (guard_dir / "sitecustomize.py").write_text(
+                "import imaplib, os, pathlib, smtplib, socket\n"
+                "pathlib.Path(os.environ['QQMAIL_GUARD_LOADED']).write_text('loaded', encoding='utf-8')\n"
+                "def blocked(*args, **kwargs):\n"
+                "    pathlib.Path(os.environ['QQMAIL_NETWORK_ATTEMPTED']).write_text('attempted', encoding='utf-8')\n"
+                "    raise AssertionError('network attempted')\n"
+                "socket.socket = blocked\n"
+                "socket.create_connection = blocked\n"
+                "socket.getaddrinfo = blocked\n"
+                "imaplib.IMAP4_SSL = blocked\n"
+                "smtplib.SMTP = blocked\n",
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment.update({
+                "PYTHONPATH": str(guard_dir),
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "QQ_EMAIL": "",
+                "QQ_EMAIL_AUTH_CODE": "",
+                "QQMAIL_GUARD_LOADED": str(loaded),
+                "QQMAIL_NETWORK_ATTEMPTED": str(attempted),
+            })
+            for name, arguments, expected_code in cases:
+                with self.subTest(name=name, arguments=arguments):
+                    loaded.unlink(missing_ok=True)
+                    attempted.unlink(missing_ok=True)
+                    completed = subprocess.run(
+                        [sys.executable, "-B", str(SCRIPTS / name), *arguments],
+                        cwd=ROOT, capture_output=True, env=environment, timeout=10,
+                    )
+                    self.assertTrue(loaded.exists(), name)
+                    self.assertFalse(attempted.exists(), name)
+                    self.assertEqual(completed.returncode, 1, name)
+                    self.assertEqual(completed.stderr, b"", name)
+                    self.assertEqual(len(completed.stdout.splitlines()), 1, name)
+                    document = json.loads(completed.stdout.decode("utf-8"))
+                    self.assertEqual(document["status"], "error", name)
+                    self.assertNotEqual(document.get("code"), "missing_credentials", name)
+                    self.assertEqual(document.get("code"), expected_code, name)
+
     def test_entrypoints_run_in_fresh_interpreters_with_utf8_output(self):
         # Start from the platform environment so Windows TEMP/TMP/SystemRoot
         # and PATH remain usable.  Remove Python import injection rather than

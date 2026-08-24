@@ -167,13 +167,26 @@ def parse_list_response(response: bytes | str) -> Folder:
 _TRASH_FALLBACK_NAMES = frozenset({"trash", "deleted messages", "deleted items", "垃圾箱", "已删除邮件"})
 
 
+def _is_controlled_trash_fallback(folder: Folder) -> bool:
+    """Accept a finite root/INBOX leaf name, never an arbitrary nested leaf."""
+    for value in (folder.wire_name, folder.display_name):
+        components = value.split(folder.delimiter) if folder.delimiter else [value]
+        if len(components) == 1:
+            leaf = components[0]
+        elif len(components) == 2 and components[0].casefold() == "inbox":
+            leaf = components[1]
+        else:
+            continue
+        if leaf.casefold() in _TRASH_FALLBACK_NAMES:
+            return True
+    return False
+
+
 def choose_trash_folder(folders: Iterable[Folder]) -> Folder | None:
     """Prefer SPECIAL-USE \\Trash; use a finite, deterministic name fallback only."""
     choices = list(folders)
     for folder in choices:
         if folder.is_trash:
             return folder
-    for folder in choices:
-        if folder.display_name.casefold() in _TRASH_FALLBACK_NAMES:
-            return folder
-    return None
+    fallbacks = [folder for folder in choices if _is_controlled_trash_fallback(folder)]
+    return fallbacks[0] if len(fallbacks) == 1 else None
