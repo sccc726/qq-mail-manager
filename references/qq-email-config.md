@@ -99,3 +99,7 @@ OpenClaw 凭证环境变量：
 - `QQ_EMAIL_AUTH_CODE`（QQ邮箱授权码）
 
 OpenClaw 可根据 skill metadata 提示配置上述变量；本地手动运行时，请先在 shell 中设置 `QQ_EMAIL` 和 `QQ_EMAIL_AUTH_CODE`。
+
+## 离线开发安全
+
+自动测试、CI、示例和代码审计均不得设置真实邮箱或授权码，也不得连接 QQ 邮箱。请使用仓库的 `FakeIMAP`、`FakeSMTP` 和网络阻断测试；开发命令见 [docs/development.md](../docs/development.md)。

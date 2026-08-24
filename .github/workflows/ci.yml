@@ -6,22 +6,35 @@ on:
 
 jobs:
   offline:
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.11', '3.12', '3.13']
+    env:
+      # CI must prove every path works without injecting mailbox credentials.
+      QQ_EMAIL: ''
+      QQ_EMAIL_AUTH_CODE: ''
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
       - name: Syntax check
         run: python -m compileall -q scripts tests
       - name: CLI help
         run: |
-          python scripts/list_folders.py --help > /dev/null
-          python scripts/search_emails.py --help > /dev/null
-          python scripts/get_email.py --help > /dev/null
-          python scripts/download_attachment.py --help > /dev/null
-          python scripts/mark_email.py --help > /dev/null
-          python scripts/move_email.py --help > /dev/null
-          python scripts/send_email.py --help > /dev/null
+          python scripts/list_folders.py --help
+          python scripts/search_emails.py --help
+          python scripts/get_email.py --help
+          python scripts/download_attachment.py --help
+          python scripts/mark_email.py --help
+          python scripts/move_email.py --help
+          python scripts/send_email.py --help
+      - name: Invalid argument and missing credential JSON smoke
+        run: >
+          python -c "import json,os,subprocess,sys; checks=[(['get_email.py','--mail_ids','1:*','--folder','INBOX','--uidvalidity','1'],'invalid_mailref'),(['get_email.py','--mail_ids','1','--folder','INBOX','--uidvalidity','1'],'missing_credentials')]; assert all((r:=subprocess.run([sys.executable,'scripts'+os.sep+args[0],*args[1:]],text=True,capture_output=True)).returncode != 0 and not r.stderr and json.loads(r.stdout)['status']=='error' and json.loads(r.stdout).get('code')==code for args,code in checks)"
       - name: Offline unittest suite
         run: python -m unittest discover -s tests -v

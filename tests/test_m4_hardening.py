@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import hashlib
+import importlib
 import importlib.util
 import io
 import json
@@ -32,6 +33,11 @@ from qqmail_core.imap_uid import (select_uid_fetch, select_uid_metadata,
 
 
 def load(name):
+    # Attachment race/FD tests intentionally patch implementation globals.
+    # After M5 ownership migration, exercise that authoritative module directly;
+    # entrypoint compatibility is checked independently by M0/M5 tests.
+    if name == "download_attachment.py":
+        return importlib.import_module("qqmail_core.attachments")
     module_name = "m4_" + name.replace(".py", "")
     spec = importlib.util.spec_from_file_location(module_name, SCRIPTS / name)
     assert spec and spec.loader

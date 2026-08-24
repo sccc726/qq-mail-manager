@@ -14,8 +14,8 @@ from email.message import Message
 from typing import Any, Iterator
 
 
-def decode_header_value(value: Any) -> str:
-    """Decode an RFC 2047 header without allowing an unknown charset to fail."""
+def decode_header_value(value: Any, *, strict_charset: bool = False) -> str:
+    """Decode an RFC 2047 header, optionally preserving legacy strictness."""
     if value is None:
         return ""
     result: list[str] = []
@@ -24,6 +24,8 @@ def decode_header_value(value: Any) -> str:
             try:
                 result.append(part.decode(charset or "utf-8", errors="replace"))
             except (LookupError, TypeError):
+                if strict_charset:
+                    raise
                 result.append(part.decode("utf-8", errors="replace"))
         else:
             result.append(part)
@@ -101,16 +103,6 @@ def extract_body_and_attachments(message: Message) -> tuple[str, list[dict[str, 
             if payload is not None:
                 body = decode_text(payload, part.get_content_charset())
     return body, attachments
-
-
-def preview_text(payload: bytes | str | None, charset: str | None = None, *, max_len: int = 150,
-                 max_bytes: int = 8192) -> str:
-    """Decode only a server-bounded literal and cap the public preview."""
-    if isinstance(payload, bytes):
-        payload = payload[:max_bytes]
-    elif isinstance(payload, str):
-        payload = payload.encode("utf-8", errors="replace")[:max_bytes]
-    return decode_text(payload, charset)[:max_len]
 
 
 _BODYSTRUCTURE = re.compile(r"\bBODYSTRUCTURE\s+", re.IGNORECASE)

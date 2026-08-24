@@ -27,6 +27,8 @@ metadata: {"openclaw":{"requires":{"env":["QQ_EMAIL","QQ_EMAIL_AUTH_CODE"]},"pri
 
 M2/U7 已完成原子迁移：搜索、读取、附件、标记、移动和回复读取均以 UID 操作；UIDVALIDITY 不匹配时会在邮件操作前停止。
 
+M5 已将业务实现集中到 `scripts/qqmail_core/`；七个入口仅保留 CLI 兼容启动。离线开发、CI 和回归测试只使用 FakeIMAP/FakeSMTP 与网络阻断，绝不配置真实凭据或访问真实邮箱；完整命令见 [docs/development.md](docs/development.md)。
+
 ## 本机文件与资源边界（M4）
 
 - 当前仅限所有者在本机交互使用：发送文件和 `download_attachment.py --dir` 默认允许自由选择目录，**不**强制可信根，也不默认拒绝符号链接、junction 或 reparse point。路径会在使用前规范化为绝对路径；发送预览以文件哈希/确认摘要绑定内容，下载使用单组件安全文件名、同目录独占临时文件与不覆盖发布。

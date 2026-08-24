@@ -1,7 +1,8 @@
-"""Small shared primitives for the QQ Mail Manager CLI scripts.
+"""Authoritative shared implementation for the seven QQ Mail CLI entrypoints.
 
-This package deliberately contains only protocol-neutral M1 foundations.  It
-does not change the existing scripts' sequence-number mail operations.
+Mail operations use stable folder + UIDVALIDITY + UID references; the thin
+``scripts/*.py`` files only provide standalone-import bootstrapping and CLI
+compatibility exports.
 """
 
 from .config import Credentials, CredentialError, load_credentials

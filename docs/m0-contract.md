@@ -49,3 +49,9 @@
 - 发送地址使用 ASCII dot-atom 和合法域标签；Unicode 仅可用于显示名（尚未协商 SMTPUTF8）。去重保留 local-part 大小写，仅将域名按大小写无关比较。
 
 移动确认摘要与 UID 实现已在 C4/C5/U6 完成；M3 已将未确认发送的原预期失败回归转为正常通过测试。
+
+## M5 实现归属与最终审计
+
+七个 `scripts/*.py` 入口只负责兼容导出和启动公共 CLI；它们不直接创建 IMAP/SMTP 连接、读取环境、处理 MIME、下载附件或执行 UID 操作。`connections.py` 是唯一连接所有者，`config.py` 是唯一环境读取点，`mime.py` 是 Header 解码与 BODYSTRUCTURE 解析的权威层；详情、搜索、附件、UID 变更和发送分别位于对应的 `qqmail_core` 模块。
+
+移动预览只请求上限为 16 KiB 的 Subject/From/Date Header，不拉取完整邮件。`BODY.PEEK[]` 仅保留在 `sending.py` 的回复源读取路径：它需要对用于确认绑定的完整原始源计算摘要；列表和移动预览均不得使用它。
